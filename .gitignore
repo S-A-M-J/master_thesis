@@ -1,0 +1,59 @@
+# Result files
+*.mp4
+*.stl
+results_archive/
+results/
+
+# Folders
+caves/
+scripts/
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Virtual environment
+venv/
+env/
+ENV/
+.venv/
+.env/
+.python-version  # pyenv version file
+Pipfile.lock     # if using Pipenv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local development settings
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.DS_Store
+
+# Logs
+*.log
+
+# DO NOT ignore these files (needed for environment recreation)
+!requirements.txt
+!environment.yml
+!pyproject.toml
+!setup.py
+!Pipfile
+master_thesis_pyenv/

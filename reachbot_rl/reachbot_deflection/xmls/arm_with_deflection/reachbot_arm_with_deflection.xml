@@ -1,0 +1,112 @@
+<?xml version="1.0"?>
+<!-- Reachbot Mujoco model with 4 arms and very stiff hinge as approx for deflection of booms-->
+<!-- Based on Reachbot Models by Bear Tolson @Stanford BDML -->
+<!-- Updated by Samuel Jahn @Stanford BDML -->
+<mujoco model="reachbot">
+  <option iterations="4" ls_iterations="10" timestep="0.0005" integrator="Euler">
+    <!--<flag eulerdamp="disable"/>-->
+  </option>
+
+  <default>
+    <default class="armBase">
+      <geom size=".09 0.02515 0.0025" type="box" pos="0 0 0" rgba="0 .8 0 1" contype="1" conaffinity="5"/>
+    </default>
+    <default class="actuatorRotational">
+      <joint axis="0 1 0" armature="0.005" damping="0.5"/>
+      <position forcerange="-25 25" inheritrange="1" kp="400"/>
+      <default class="shoulder">
+        <joint type="hinge" axis="0 0 1" damping="20" limited="true" range="-360 360"/>
+        <geom size="0.075 0.0381 0.055" type="box" pos="0 0 0" rgba="0.7 0.7 0.7 1" contype="2" conaffinity="5" mass="0.377"/>
+      </default>
+      <default class="elbow">
+        <joint type="hinge" axis="1 0 0" pos="0 0 0" damping="20" range="0 230"/>
+        <geom size="0.06313 0.0605" pos="0 0.0158975 0" euler="0 90 0" type="cylinder" rgba="1 0.1 0.1 1" contype="0" conaffinity="0" mass="1.046"/>
+      </default>
+    </default>
+    <default class="actuatorPrismatic">
+      <joint axis="0 1 0" armature="0.005" damping="0.5"/>
+      <position forcerange="-476 476" inheritrange="1" kp="1000"/>
+      <default class="prismatic">
+        <joint axis="0 1 0" armature="0.005" damping="0.5" limited="true" range="0 1.7"/>
+      </default>
+    </default>
+    <default class="armSegment">
+      <geom size="0.005" type="sphere" rgba="0.1 0.1 0.1 0" mass="0.001"/>
+      <default class="boomHingeJoint">
+        <joint type="hinge" axis="1 0 0" stiffness="60" range="-15 15"/>
+      </default>
+      <default class="boomSlideJoint">
+        <joint type="slide" axis="0 1 0" range="0 0.85"/>
+      </default>
+    </default>
+    <default class="armTendon">
+      <tendon width="0.04" rgba="0.1 0.1 0.1 1"/>
+    </default>
+  </default>
+
+
+  <visual>
+    <map force="0.1" zfar="30"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global offwidth="2560" offheight="1440" elevation="-20" azimuth="120"/>
+  </visual>
+  <statistic center="0 0 0.7"/>
+  <asset>
+    <texture name="body" type="cube" builtin="flat" mark="cross" width="128" height="128" rgb1="0.8 0.6 0.4" rgb2="0.8 0.6 0.4" markrgb="1 1 1"/>
+    <material name="body" texture="body" texuniform="true" rgba="0.8 0.6 .4 1"/>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance="0"/>
+  </asset>
+  <worldbody>
+    <body name="Basis" pos="0 0 0.5">
+      <!-- X axis (red) -->
+      <!-- <geom name="x_axis" fromto="0 0 0 0.1 0 0" type="capsule" size="0.005" rgba="1 0 0 1" contype="0" conaffinity="0"/> -->
+      <!-- Y axis (green) -->
+      <!-- <geom name="y_axis" fromto="0 0 0 0 0.1 0" type="capsule" size="0.005" rgba="0 1 0 1" contype="0" conaffinity="0"/> -->
+      <!-- Z axis (blue) -->
+      <!-- <geom name="z_axis" fromto="0 0 0 0 0 0.1" type="capsule" size="0.005" rgba="0 0 1 1" contype="0" conaffinity="0"/> -->
+    </body>
+    <!--<geom name="floor" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.6" condim="3" contype="1" conaffinity="0"/>-->
+    <light directional="true" pos="0 0 5" dir="0 0 -1"/>
+    <body name="mainBody" pos="0 0 0.5">
+      <camera name="track" pos="0.846 -1.3 0.316" xyaxes="0.866 0.500 0.000 -0.171 0.296 0.940" mode="trackcom"/>
+      <site name="imu" pos="0 0 0.1"/>
+      <site name="center" pos="0 0 0"/>
+      <joint name="freejoint" type="free"/>
+      <geom name="mainBody" type="box" size="0.09 0.09 0.0405" mass="5"/>
+      <body name="arm1" pos="0 0.09 0" euler="-90 0 0">
+        <include file="reachbot_deflection/xmls/arm_with_deflection/reachbot_with_deflection/ReachBotArm1.Xml"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="boomvisual11" class="armTendon">
+      <site site="boomSiteA1"/>
+      <site site="motorSite1"/>
+    </spatial>
+    <spatial name="boomvisual12" class="armTendon">
+      <site site="boomEndSite1"/>
+      <site site="boomSiteA1"/>
+    </spatial>
+  </tendon>
+  <actuator>
+    <position class="actuatorRotational" name="motor11" joint="revolver11"/> 
+    <position class="actuatorRotational" name="motor12" joint="revolver12"/>
+    <position class="actuatorPrismatic" name="motorBoom11" joint="prismatic11"/>
+    <position class="actuatorPrismatic" name="motorBoom12" joint="prismatic12"/>
+  </actuator>
+  <sensor>
+    <gyro site="imu" name="gyro"/>
+    <velocimeter site="imu" name="local_linvel"/>
+    <accelerometer site="imu" name="accelerometer"/>
+    <framepos objtype="site" objname="imu" name="position"/>
+    <framezaxis objtype="site" objname="imu" name="upvector"/>
+    <framexaxis objtype="site" objname="imu" name="forwardvector"/>
+    <framelinvel objtype="site" objname="imu" name="global_linvel"/>
+    <frameangvel objtype="site" objname="imu" name="global_angvel"/>
+    <framequat objtype="site" objname="imu" name="orientation"/>
+    <framelinvel objtype="site" objname="boomEndSite1" name="boomEndSite1_global_linvel"/>
+    <framepos objtype="site" objname="boomEndSite1" name="boomEndSite1_pos" reftype="site" refname="imu"/>
+    <framepos objtype="site" objname="center" name="head_pos"/>
+  </sensor>
+</mujoco>

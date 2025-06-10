@@ -1,0 +1,169 @@
+{% extends "base.html" %} 
+{% block body %}
+<div class="container-fluid d-flex">
+  <div class="sidebar" style="width: 250px; flex-shrink: 0;">
+    <h4>Runs</h4>
+    <hr />
+    <a href="/compare" class="btn btn-primary btn-block">Compare Runs</a>
+    <hr />
+    <ul class="nav flex-column" id="runTabs" style="font-size: 14px">
+      {% for run in runs %}
+      <li class="nav-item"></li>
+        <a class="nav-link" href="#" data-run="{{ run }}">{{ run }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  <div class="content flex-grow-1">
+    <h2 id="runTitle">Select a run</h2>
+    <h3 id="taskTitle">Task: </h3>
+    <canvas id="rewardChart" width="800" height="400"></canvas>
+    <hr />
+    <h4>Toggle Rewards</h4>
+    <div id="rewardToggles" class="d-flex flex-wrap"></div>
+    <hr />
+    <h4>Training Video</h4>
+    <video id="trainingVideo" controls width="480">
+      <source id="videoSource" src="" type="video/mp4" />
+      Your browser does not support the video tag.
+    </video>
+    <hr />
+    <h4>Config</h4>
+    <pre id="configDisplay"></pre>
+  </div>
+</div>
+
+<script>
+  var chart;
+  var rewardData = {};
+
+  function loadRunData(run) {
+    $("#runTitle").text("Run: " + run);
+    // Update video source dynamically
+    var videoPath = "/videos/" + run + "/posttraining.mp4";
+    $("#videoSource").attr("src", videoPath);
+    $("#trainingVideo")[0].load(); // Reload video element
+    $.getJSON("/data/" + run, function (data) {
+      // Process rewards data
+      var rewards = data.rewards;
+      $("#taskTitle").text("Task: " + data.task);
+      var labels = [];
+      rewardData = {}; // Reset reward data
+      for (var i = 0; i < rewards.length; i++) {
+        if (rewards[i].timesteps) {
+          labels.push(rewards[i].timesteps);
+          if (i == rewards.length - 1) {
+            delete rewards[i].timesteps;
+          }
+        } else {
+          labels.push(i + 1);
+        }
+        for (var key in rewards[i]) {
+          if (
+            key.startsWith("eval/episode_reward/") ||
+            key.startsWith("eval/")
+          ) {
+            var shortkey = key.replace("eval/episode_reward/", "");
+            shortkey = shortkey.replace("eval/", "");
+            if (!rewardData[shortkey]) {
+              rewardData[shortkey] = [];
+            }
+            rewardData[shortkey].push(rewards[i][key]);
+          }
+        }
+      }
+      // Generate checkboxes
+      generateCheckboxes(Object.keys(rewardData));
+      // Create (or update) chart
+      updateChart(labels);
+      // Display config
+      $("#configDisplay").text(JSON.stringify(data.config, null, 2));
+    });
+  }
+
+  function generateCheckboxes(rewardKeys) {
+    var rewardToggles = $("#rewardToggles");
+    rewardToggles.empty(); // Clear existing checkboxes
+    rewardKeys.forEach(function (key) {
+      if (!key.includes("_std")) {
+        var label = $("<label></label>").text(key).css("margin-right", "10px");
+        var checkbox = $(
+          '<input type="checkbox" class="reward-toggle" data-reward="' +
+            key +
+            '"/>'
+        );
+        if (key === "episode_reward") {
+          checkbox.prop("checked", true);
+        }
+        label.prepend(checkbox);
+        rewardToggles.append(label);
+      }
+    });
+    // Attach change event to new checkboxes
+    $(".reward-toggle").change(function () {
+      updateChart(chart.data.labels);
+    });
+  }
+
+  function stringToColor(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    let color = "#";
+    for (let i = 0; i < 3; i++) {
+      const value = (hash >> (i * 8)) & 0xFF;
+      color += ("00" + value.toString(16)).substr(-2);
+    }
+    return color;
+  }
+
+  function updateChart(labels) {
+    var ctx = document.getElementById("rewardChart").getContext("2d");
+    if (chart) {
+      chart.destroy();
+    }
+    var datasets = [];
+    $(".reward-toggle:checked").each(function (index) {
+      var rewardKey = $(this).data("reward");
+      if (rewardData[rewardKey]) {
+        datasets.push({
+          label: rewardKey,
+          data: rewardData[rewardKey],
+          borderColor: stringToColor(rewardKey),
+          fill: false,
+        });
+      }
+    });
+    chart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: labels,
+        datasets: datasets,
+      },
+      options: {
+        scales: {
+          x: {
+            display: true,
+            title: { display: true, text: "Timesteps" },
+          },
+          y: {
+            display: true,
+            title: { display: true, text: "Reward" },
+          },
+        },
+      },
+    });
+  }
+
+  $(document).ready(function () {
+    $("#runTabs a").click(function (e) {
+      e.preventDefault();
+      var run = $(this).data("run");
+      loadRunData(run);
+      $("#runTabs a").removeClass("active");
+      $(this).addClass("active");
+    });
+  });
+</script>
+{% endblock %}

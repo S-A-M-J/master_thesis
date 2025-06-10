@@ -1,0 +1,34 @@
+<!-- Reachbot Mujoco model with 4 arms and very stiff hinge as approx for deflection of booms-->
+<!-- Based on Reachbot Models by Bear Tolson @Stanford BDML -->
+<!-- Updated by Samuel Jahn @Stanford BDML -->
+<body name="Base2" pos="0 0 0">
+  <geom name="Base2" class="armBase"/>
+  <body name="Motor21" pos="0 0 0.069311">
+    <joint name="revolver21" class="shoulder"/>
+    <geom name="Motor21" class="shoulder"/>
+    <body name="Motor22" pos="0 0 0.036176">
+      <site name="motorSite2" pos="0 0 -0.02" size="0.0001"/>
+      <geom name="Motor22" class="elbow"/>
+      <joint name="revolver22" class="elbow"/>
+      <!-- Begin boom chain -->
+      <body name="boom_base2" pos="0 0.059837 -0.0525">
+        <!-- Retain the original boom base geometry -->
+        <!-- Slide Joint 1 -->
+        <joint name="prismatic21" class="boomSlideJoint"/>
+        <geom name="boomBaseGeom2" class="armSegment"/>
+        <site name="boomSiteA2" pos="0 0 0" size="0.0001"/>
+        <body name="boom_seg21" pos="0 0 0">
+          <!-- Hinge Joint 1 for deflection -->
+          <joint name="hinge21" class="boomHingeJoint"/>
+          <geom name="boom_seg2_geom" class="armSegment"/>
+          <body name="boom_seg22" pos="0 0 0">
+            <!-- Slide Joint 2 -->
+            <joint name="prismatic22" class="boomSlideJoint"/>
+            <site name="boomEndSite2" pos="0 0 0" size="0.0001"/>
+            <geom name="boomEnd2" pos="0 0 0" size="0.05" type="sphere" rgba="0.1 0.1 0.1 1" contype="4" conaffinity="5" mass="0.344"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </body>
+</body>

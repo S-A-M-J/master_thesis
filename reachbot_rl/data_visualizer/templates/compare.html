@@ -1,0 +1,226 @@
+{% extends "base.html" %} {% block body %}
+<div class="container-fluid d-flex">
+  <div class="sidebar" style="width: 250px; flex-shrink: 0">
+    <h4>Select Runs to Compare</h4>
+    <form id="compareForm">
+      <button
+        type="button"
+        class="btn btn-primary btn-block mt-3"
+        id="compareBtn"
+      >
+        Compare
+      </button>
+      <a href="/" class="btn btn-secondary btn-block">Back to Runs</a>
+      <hr />
+      {% for run in runs %}
+      <div class="form-check">
+        <input
+          class="form-check-input"
+          type="checkbox"
+          value="{{ run }}"
+          id="check_{{ run }}"
+          name="runs"
+        />
+        <label class="form-check-label" for="check_{{ run }}">{{ run }}</label>
+      </div>
+      {% endfor %}
+    </form>
+  </div>
+  <div class="content flex-grow-1">
+    <h2>Compare Episode Rewards</h2>
+    <canvas id="compareChart" width="800" height="400"></canvas>
+    <hr />
+    <h4>Toggle Rewards</h4>
+    <div id="rewardToggles" class="d-flex flex-wrap"></div>
+    <hr />
+    <h4>Training Videos</h4>
+    <div id="videoContainer" class="d-flex flex-wrap"></div>
+    <hr />
+    <h4>Configs</h4>
+    <div id="configContainer" class="d-flex flex-wrap"></div>
+  </div>
+</div>
+
+<script>
+  var compareChart;
+  var rewardData = {};
+
+  function updateCompareChart(selectedRuns, data) {
+    var ctx = document.getElementById("compareChart").getContext("2d");
+    if (compareChart) {
+      compareChart.destroy();
+    }
+
+    var datasets = [];
+    var allXValues = new Set(); // Collect all unique timesteps
+
+    for (var run in data) {
+      var rewards = data[run].rewards;
+      var rewardPoints = [];
+
+      for (var i = 0; i < rewards.length; i++) {
+        var timestep = rewards[i]["timesteps"] || i + 1; // Use 'timestep' if available, otherwise index
+        var rewardValue = rewards[i]["eval/episode_reward"];
+        rewardPoints.push({ x: timestep, y: rewardValue });
+        allXValues.add(timestep);
+      }
+
+      var color = getRandomColor();
+      datasets.push({
+        label: run,
+        data: rewardPoints,
+        borderColor: color,
+        backgroundColor: color,
+        showLine: true, // Ensures it's connected despite scatter type
+      });
+    }
+
+    var sortedXValues = Array.from(allXValues).sort((a, b) => a - b); // Ensure x-axis is sorted
+
+    compareChart = new Chart(ctx, {
+      type: "scatter", // Allows varying x-axis values
+      data: {
+        datasets: datasets,
+      },
+      options: {
+        scales: {
+          x: {
+            type: "linear", // Ensures proper scaling
+            position: "bottom",
+            title: { display: true, text: "Timesteps" },
+            ticks: { stepSize: 1 },
+          },
+          y: {
+            title: { display: true, text: "Reward" },
+          },
+        },
+      },
+    });
+  }
+
+  function getRandomColor() {
+    var r = Math.floor(Math.random() * 255);
+    var g = Math.floor(Math.random() * 255);
+    var b = Math.floor(Math.random() * 255);
+    return "rgba(" + r + ", " + g + ", " + b + ", 1)";
+  }
+
+  function generateCheckboxes(rewardKeys) {
+    var rewardToggles = $("#rewardToggles");
+    rewardToggles.empty();
+    rewardKeys.forEach(function (key) {
+      if (!key.includes("_std")) {
+        var label = $("<label></label>").text(key).css("margin-right", "10px");
+        var checkbox = $(
+          '<input type="checkbox" class="reward-toggle" data-reward="' +
+            key +
+            '"/>'
+        );
+        if (key === "episode_reward") {
+          checkbox.prop("checked", true);
+        }
+        label.prepend(checkbox);
+        rewardToggles.append(label);
+      }
+    });
+
+    $(".reward-toggle").change(function () {
+      updateCompareChart(chart.data.labels);
+    });
+  }
+
+  $(document).ready(function () {
+    $("#compareBtn").click(function () {
+      var selected = [];
+      $("#compareForm input:checked").each(function () {
+        selected.push($(this).val());
+      });
+      if (selected.length === 0) {
+        alert("Please select at least one run.");
+        return;
+      }
+
+      $.getJSON("/compare_data", { runs: selected }, function (data) {
+        updateCompareChart(selected, data);
+
+        // Generate checkboxes for rewards
+        var rewardKeys = Object.keys(data[selected[0]].rewards[0]);
+        generateCheckboxes(rewardKeys);
+
+        // Display videos
+        var videoContainer = $("#videoContainer");
+        videoContainer.empty();
+        selected.forEach(function (run) {
+          var videoPath = "/videos/" + run + "/posttraining.mp4";
+          var videoElement = $(
+            '<video controls width="480"><source src="' +
+              videoPath +
+              '" type="video/mp4">Your browser does not support the video tag.</video>'
+          );
+          var runLabel = $("<div></div>").text(run).css("text-align", "center");
+          videoContainer.append(videoElement).append(runLabel);
+        });
+
+        // Display configs with differences highlighted
+        var configContainer = $("#configContainer");
+        configContainer.empty();
+        var baseConfig = data[selected[0]].config;
+
+        selected.forEach(function (run) {
+          var config = data[run].config;
+          var configElement = $("<pre></pre>").css("flex", "1 1 0");
+          var configText = generateHighlightedConfig(baseConfig, config);
+          configElement.html(configText);
+          configContainer.append(configElement);
+        });
+      });
+    });
+  });
+
+  /**
+   * Compares two configurations and highlights differences.
+   * @param {Object} baseConfig - The base configuration (from the first run).
+   * @param {Object} compareConfig - The configuration to compare.
+   * @returns {string} - The formatted and highlighted JSON string.
+   */
+  function generateHighlightedConfig(baseConfig, compareConfig) {
+    function highlightDifferences(obj1, obj2, level = 0) {
+      if (
+        typeof obj1 !== "object" ||
+        obj1 === null ||
+        typeof obj2 !== "object" ||
+        obj2 === null
+      ) {
+        return obj1 !== obj2
+          ? `<span style="color: red">${JSON.stringify(obj2)}</span>`
+          : JSON.stringify(obj2);
+      }
+
+      let result = "{<br>";
+      let keys = new Set([...Object.keys(obj1), ...Object.keys(obj2)]);
+
+      keys.forEach((key) => {
+        let value1 = obj1[key];
+        let value2 = obj2[key];
+        tabs = "&nbsp;".repeat(level * 2);
+        result += `${tabs}"${key}": `;
+        if (typeof value2 === "object" && value2 !== null) {
+          level++;
+          result += highlightDifferences(value1, value2, level);
+        } else {
+          result +=
+            value1 !== value2
+              ? `<span style="color: red">${JSON.stringify(value2)}</span>`
+              : JSON.stringify(value2);
+        }
+        result += ",<br>";
+      });
+
+      result += "}";
+      return result;
+    }
+
+    return highlightDifferences(baseConfig, compareConfig);
+  }
+</script>
+{% endblock %}
