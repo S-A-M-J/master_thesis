@@ -9,6 +9,9 @@ except RuntimeError:
 
 import os
 
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
 NVIDIA_ICD_CONFIG_PATH = '/usr/share/glvnd/egl_vendor.d/10_nvidia.json'
 if not os.path.exists(NVIDIA_ICD_CONFIG_PATH):
   with open(NVIDIA_ICD_CONFIG_PATH, 'w') as f:
@@ -31,6 +34,8 @@ os.environ['XLA_FLAGS'] = xla_flags
 
 import jax
 from jax import numpy as jp
+
+
 
 # This helps with nan values being returned from the model while costing some perf. See github @brax for more info
 # Other fix: jax.config.update('jax_enable_x64', True). However, this will slow down the training a lot
@@ -77,7 +82,7 @@ from flax.training import orbax_utils
 from orbax import checkpoint as ocp
 from mujoco_playground.config import locomotion_params
 
-from tasks.cave_exloration import CaveExplore
+from tasks.cave_exploration.cave_exploration import CaveExplore
 from tasks.common.randomize import domain_randomize as reachbot_randomize
 from mujoco_playground import registry
 
@@ -98,7 +103,7 @@ class JaxArrayEncoder(json.JSONEncoder):
 def save_video(frames, video_path, fps):
     import imageio
     imageio.mimsave(video_path, frames, fps=fps)
-
+       
 
 def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
@@ -106,7 +111,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   # env = registry.load('cartpole_balance')
   # env_cfg = registry.get_default_config(cartpole_balance)
   # Create a custom environment
-  from tasks.cave_exloration import default_config as reachbot_config
+  from tasks.cave_exploration.cave_exploration import default_config as reachbot_config
   env_cfg = reachbot_config()
   #env_cfg.reward_config.scales.posture = 0.0
   #env_cfg.reward_config.dof_vel = -0.1

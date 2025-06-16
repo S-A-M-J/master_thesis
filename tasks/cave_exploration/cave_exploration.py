@@ -19,21 +19,29 @@
 
 from typing import Any, Dict, Optional, Union
 
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+
+import mujoco
 import jax
 import jax.numpy as jp
 from ml_collections import config_dict
-from mujoco import mjx
+from mujoco import mjx, MjModel
 from mujoco.mjx._src import math
 import numpy as np
 
 from mujoco_playground._src import collision
 from mujoco_playground._src import mjx_env
-import tasks.common.base as reachbot_base
 import tasks.common.reachbot_constants as consts
 
+from models.model_loader import ReachbotModelType
+from environment.env_loader import CaveBatchLoader
+import random
 
 def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
+      cave_batch_size=1,  # Number of caves to load in a batch
       ctrl_dt=0.02,
       sim_dt=0.004,
       episode_length=1000,
@@ -89,45 +97,27 @@ def default_config() -> config_dict.ConfigDict:
   )
 
 
-class CaveExplore(reachbot_base.ReachbotEnv):
+class CaveExplore(mjx_env.MjxEnv):
   """Explore the cave environment."""
-
-  _deflection_model_used = False
-  observation_size = 0  # Will be set during initialization
-  privileged_state_size = 0  # Will be set during initialization
-  action_size = 0  # Will be set during initialization
-  num_booms = 4  # Default number of booms
 
   def __init__(
       self,
-      task: str = "reachbot_basic",
+      model: ReachbotModelType = ReachbotModelType.BASIC,
       config: config_dict.ConfigDict = default_config(),
       config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
       # LIDAR parameters
-      lidar_num_horizontal_rays: int = 10,  # Renamed from lidar_num_rays
+      lidar_num_horizontal_rays: int = 10,
       lidar_max_range: float = 10.0,
-      lidar_horizontal_angle_range: float = jp.pi * 2,  # 360 degrees by default
-      lidar_num_vertical_rays: int = 5,  # New parameter for vertical rays
-      lidar_vertical_angle_range: float = jp.pi / 6,  # New parameter for vertical angle range (30 degrees)
-      # Cave parameters
-      cave_width: float = 1.0,
-      cave_height: float = 1.0,
-      cave_length: float = 1.0,
-      target_pos : jax.Array = jp.array([0.0, 0.0, 0.0]), # x, y, z coordinates of the target position in worldspace
-      voxel_positions: jax.Array = jp.zeros((0, 3), dtype=jp.float32), # x, y, z coordinates of multiple voxel positions in worldspace
-      action_size: int = 12,  # Optional explicit action size
+      lidar_horizontal_angle_range: float = jp.pi * 2,
+      lidar_num_vertical_rays: int = 5,
+      lidar_vertical_angle_range: float = jp.pi / 6,
   ):
-    super().__init__(
-        xml_path=consts.task_to_xml(task).as_posix(),
-        config=config,
-        config_overrides=config_overrides,
-    )
-    self._post_init()
-    if "deflection" in task:
-      self._deflection_model_used = True
-    
-    # Calculate observation sizes after post_init
-    self._calculate_observation_sizes()
+    # Replace default config with provided config and overrides
+    self._config = config_dict.ConfigDict(config)
+    if config_overrides:
+      self._config.update(config_overrides)
+    self._envs = CaveBatchLoader(self._config.cave_batch_size, self._config, model)
+    self._model = model
     
     # LIDAR parameters
     self._lidar_num_horizontal_rays = lidar_num_horizontal_rays
@@ -135,78 +125,114 @@ class CaveExplore(reachbot_base.ReachbotEnv):
     self._lidar_max_range = lidar_max_range
     self._lidar_horizontal_angle_range = lidar_horizontal_angle_range
     self._lidar_vertical_angle_range = lidar_vertical_angle_range
-    self._head_pos_sensor_id = self._mj_model.sensor(consts.HEAD_POS_SENSOR).id
-
-    # Cave parameters
-    self._cave_width = cave_width
-    self._cave_height = cave_height
-    self._cave_length = cave_length
-    self._target_pos = target_pos
-    if (voxel_positions is not None):
-      self._voxel_positions = voxel_positions
-    else: 
-      self._voxel_positions = voxel_positions
-      
-    # Calculate observation and action sizes
-    self.action_size = action_size if action_size is not None else self.mjx_model.nu
     
-    # We'll calculate the actual observation size after post_init
-    # when we have all the required variables
+    # Select initial random environment
+    self._select_random_env()
+    
+    # Call parent class __init__
+    super().__init__(config, config_overrides)
+    
+    # Call _post_init to initialize model-dependent attributes
+    self._post_init()
+    
 
   def _post_init(self) -> None:
-    self._init_q = jp.array(self._mj_model.keyframe("home").qpos)
-    self._default_pose = jp.array(self._mj_model.keyframe("home").qpos[7:])
+    self._init_q = jp.array(self._active_env["mj_model"].keyframe("home").qpos)
+    self._default_pose = jp.array(self._active_env["mj_model"].keyframe("home").qpos[7:])
 
     self._z_des = 0.42
 
     # Note: First joint is freejoint.
-    self._lowers, self._uppers = self.mj_model.jnt_range[1:].T
+    self._lowers, self._uppers = self._active_env["mj_model"].jnt_range[1:].T
     self._soft_lowers = self._lowers * self._config.soft_joint_pos_limit_factor
     self._soft_uppers = self._uppers * self._config.soft_joint_pos_limit_factor
 
-    self._torso_body_id = self._mj_model.body(consts.ROOT_BODY).id
-    self._torso_mass = self._mj_model.body_subtreemass[self._torso_body_id]
+    self._torso_body_id = self._active_env["mj_model"].body(consts.ROOT_BODY).id
+    self._torso_mass = self._active_env["mj_model"].body_subtreemass[self._torso_body_id]
 
     self._feet_site_id = np.array(
-        [self._mj_model.site(name).id for name in consts.FEET_SITES]
+        [self._active_env["mj_model"].site(name).id for name in consts.FEET_SITES]
     )
-    self._floor_geom_id = self._mj_model.geom("floor").id
+    # Collect all geoms whose names start with "cave_wall" as floor geoms
+    self._floor_geom_ids = np.array([
+      i for i in range(self._active_env["mj_model"].ngeom)
+      if mujoco.mj_id2name(self._active_env["mj_model"], mujoco.mjtObj.mjOBJ_GEOM, i).startswith("cave_wall")
+    ])
+    print("Floor boxes detected:", len(self._floor_geom_ids))
     self._feet_geom_id = np.array(
-        [self._mj_model.geom(name).id for name in consts.FEET_GEOMS]
+        [self._active_env["mj_model"].geom(name).id for name in consts.FEET_GEOMS]
     )
 
     foot_linvel_sensor_adr = []
     for site in consts.FEET_SITES:
-      sensor_id = self._mj_model.sensor(f"{site}_global_linvel").id
-      sensor_adr = self._mj_model.sensor_adr[sensor_id]
-      sensor_dim = self._mj_model.sensor_dim[sensor_id]
+      sensor_id = self._active_env["mj_model"].sensor(f"{site}_global_linvel").id
+      sensor_adr = self._active_env["mj_model"].sensor_adr[sensor_id]
+      sensor_dim = self._active_env["mj_model"].sensor_dim[sensor_id]
       foot_linvel_sensor_adr.append(
           list(range(sensor_adr, sensor_adr + sensor_dim))
       )
     self._foot_linvel_sensor_adr = jp.array(foot_linvel_sensor_adr)
 
-    self._imu_site_id = self._mj_model.site("imu").id
+    # Initialize IMU site ID which is needed for get_gravity method
+    self._imu_site_id = self._active_env["mj_model"].site("imu").id
 
+    print("CaveExplore task initialized with model:", self._model)
+    print("CaveExplore task action space:", self.action_size)
+    print("CaveExplore task observation space:", self.observation_size)
+
+  def _select_random_env(self) -> None:
+    env_idx = random.randint(0, self._config.cave_batch_size - 1)
+    self._active_env = self._envs.envs[env_idx]
+
+  def get_upvector(self, data: mjx.Data) -> jax.Array:
+    return mjx_env.get_sensor_data(self._active_env["mj_model"], data, consts.UPVECTOR_SENSOR)
+
+  def get_gravity(self, data: mjx.Data) -> jax.Array:
+    return data.site_xmat[self._imu_site_id].T @ jp.array([0, 0, -1])
+
+  def get_global_linvel(self, data: mjx.Data) -> jax.Array:
+    return mjx_env.get_sensor_data(
+        self._active_env["mj_model"], data, consts.GLOBAL_LINVEL_SENSOR
+    )
+
+  def get_global_angvel(self, data: mjx.Data) -> jax.Array:
+    return mjx_env.get_sensor_data(
+        self._active_env["mj_model"], data, consts.GLOBAL_ANGVEL_SENSOR
+    )
+
+  def get_local_linvel(self, data: mjx.Data) -> jax.Array:
+    return mjx_env.get_sensor_data(
+        self._active_env["mj_model"], data, consts.LOCAL_LINVEL_SENSOR
+    )
+
+  def get_accelerometer(self, data: mjx.Data) -> jax.Array:
+    return mjx_env.get_sensor_data(
+        self._active_env["mj_model"], data, consts.ACCELEROMETER_SENSOR
+    )
+
+  def get_gyro(self, data: mjx.Data) -> jax.Array:
+    return mjx_env.get_sensor_data(self._active_env["mj_model"], data, consts.GYRO_SENSOR)
+
+  def get_lidar_pos(self, data: mjx.Data) -> jax.Array: # Added for LIDAR
+    return mjx_env.get_sensor_data(self._active_env["mj_model"], data, consts.HEAD_POS_SENSOR) # Added for LIDAR
+
+  def get_feet_pos(self, data: mjx.Data) -> jax.Array:
+    return jp.vstack([
+        mjx_env.get_sensor_data(self._active_env["mj_model"], data, sensor_name)
+        for sensor_name in consts.FEET_POS_SENSOR
+    ])
 
   def _qpos_to_motor_ctrl(self, qpos: jax.Array) -> jax.Array:
     """Convert joint angles to control input format"""
-    if self._deflection_model_used:
-      return jp.concatenate([qpos[7:10], qpos[12:15], qpos[17:20], qpos[22:25]])  # Exclude the deflection joints
-    else:
-      return qpos[7:-4]
+    return qpos[7:7+self.mjx_model.nu]
     
-  def _qpos_to_stickiness_ctrl(self, qpos: jax.Array) -> jax.Array:
-    """Convert joint angles to stickiness control input format"""
-    if self._deflection_model_used:
-      return jp.concatenate([qpos[10:12], qpos[15:17], qpos[20:22], qpos[25:27]])  # Exclude the deflection joints
-    else:
-      return qpos[-4:] 
-
   def reset(self, rng: jax.Array) -> mjx_env.State:
-    qpos = self._init_q
+    """Resets the environment to a random state."""
+    self._select_random_env()
+    qpos = jp.array(self._active_env["mj_model"].keyframe("home").qpos.copy())
     qvel = jp.zeros(self.mjx_model.nv)
 
-    # x=+U(-0.5, 0.5), y=+U(-0.5, 0.5), yaw=U(-3.14, 3.14).
+    # Randomize the initial position and orientation of the robot
     rng, key = jax.random.split(rng)
     dxy = jax.random.uniform(key, (2,), minval=-0.5, maxval=0.5)
     qpos = qpos.at[0:2].set(qpos[0:2] + dxy)
@@ -216,7 +242,7 @@ class CaveExplore(reachbot_base.ReachbotEnv):
     new_quat = math.quat_mul(qpos[3:7], quat)
     qpos = qpos.at[3:7].set(new_quat)
 
-    # d(xyzrpy)=U(-0.5, 0.5)
+    #  Randomize the initial joint velocities
     rng, key = jax.random.split(rng)
     qvel = qvel.at[0:6].set(
         jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
@@ -248,14 +274,15 @@ class CaveExplore(reachbot_base.ReachbotEnv):
     )
 
     rng, key1, key2 = jax.random.split(rng, 3)
-    time_until_next_cmd = jax.random.exponential(key1) * 5.0
   
 
     info = {
         "rng": rng,
-        "target_pos": self._target_pos,
+        "target_pos": self._active_env["target_pos"],
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
+        "last_contact": jp.zeros(len(self._feet_geom_id), dtype=bool),
+        "feet_air_time": jp.zeros(len(self._feet_geom_id)),
         "steps_until_next_pert": steps_until_next_pert,
         "pert_duration_seconds": pert_duration_seconds,
         "pert_duration": pert_duration_steps,
@@ -281,18 +308,25 @@ class CaveExplore(reachbot_base.ReachbotEnv):
       state = self._maybe_apply_perturbation(state)
     # state = self._reset_if_outside_bounds(state)
     state_formatted = self._qpos_to_motor_ctrl(self._init_q)
-    stickiness_ctrl = self._qpos_to_stickiness_ctrl(self._init_q)
-    motor_targets = state_formatted + action * self._config.action_scale
-    contact = jp.array([
-            collision.geoms_colliding(state.data, geom_id, self._floor_geom_id)
-            for geom_id in self._feet_geom_id
-        ])
-    
+    # Split the action into motor control and stickiness control
+    actuator_action = action[:self.mjx_model.nu]         # e.g., shape (8,)
+    stickiness_action = action[self.mjx_model.nu:] 
+    motor_targets = state_formatted + actuator_action * self._config.action_scale
+    contacts = state.data.contact
+
+    # Efficiently build contact array for each foot geom based on prefiltered contacts
+    contact_set = set()
+    for c in contacts:
+        if (c.geom1 in self._feet_geom_id and c.geom2 in self._floor_geom_ids):
+            contact_set.add(c.geom1)
+        elif (c.geom2 in self._feet_geom_id and c.geom1 in self._floor_geom_ids):
+            contact_set.add(c.geom2)
+    contact = jp.array([geom_id in contact_set for geom_id in self._feet_geom_id])
+
     if self._config.stickiness_config.enable:
       # Apply stickiness force if enabled
-      xfrc_applied = self._apply_stickiness_forces(state, stickiness_ctrl)
+      xfrc_applied = self._apply_stickiness_forces(state, stickiness_action)
       state = state.replace(data=state.data.replace(xfrc_applied=xfrc_applied))
-
 
     data = mjx_env.step(
         self.mjx_model, state.data, motor_targets, self.n_substeps
@@ -327,7 +361,7 @@ class CaveExplore(reachbot_base.ReachbotEnv):
     the corresponding stickiness control from the neural network is activated"""
     
     # Initialize external forces array
-    xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+    xfrc_applied = jp.zeros((self._active_env["mjx_model"].nbody, 6))
     
     # Check contacts for each boom
     boom_idxs = []
@@ -339,8 +373,8 @@ class CaveExplore(reachbot_base.ReachbotEnv):
       geom2_id = contact.geom2
       
       # Get geom names
-      geom1_name = self.mjx_model.geom_id2name[geom1_id] if geom1_id < len(self.mjx_model.geom_id2name) else ""
-      geom2_name = self.mjx_model.geom_id2name[geom2_id] if geom2_id < len(self.mjx_model.geom_id2name) else ""
+      geom1_name = self._active_env["mjx_model"].geom_id2name[geom1_id] if geom1_id < len(self._active_env["mjx_model"].geom_id2name) else ""
+      geom2_name = self._active_env["mjx_model"].geom_id2name[geom2_id] if geom2_id < len(self._active_env["mjx_model"].geom_id2name) else ""
       
       # Check if one object is a boom end and the other is a cave wall
       if "boomEnd" in geom1_name and "cave_wall" in geom2_name:
@@ -353,7 +387,7 @@ class CaveExplore(reachbot_base.ReachbotEnv):
     # Apply stickiness forces for each contact where stickiness is activated
     for i, (boom_id, wall_id) in enumerate(zip(boom_idxs, wall_idxs)):
       # Get the boom number from its name to index into stickiness_signals
-      boom_name = self.mjx_model.geom_id2name[boom_id]
+      boom_name = self._active_env["mjx_model"].geom_id2name[boom_id]
       boom_num = int(boom_name.split('boomEnd')[1]) if len(boom_name.split('boomEnd')) > 1 else i % self.num_booms
       
       # Check if stickiness is activated for this boom (threshold > 0.5)
@@ -368,7 +402,7 @@ class CaveExplore(reachbot_base.ReachbotEnv):
         normalized_direction = direction_vector / (distance + 1e-6)
         
         # Apply force to the body containing this boom end
-        boom_body_id = self.mjx_model.geom_bodyid[boom_id]
+        boom_body_id = self._active_env["mjx_model"].geom_bodyid[boom_id]
         force_magnitude = 100.0  # Adjust this value to control stickiness strength
         
         # Add force to the existing forces
@@ -378,7 +412,7 @@ class CaveExplore(reachbot_base.ReachbotEnv):
     
     return xfrc_applied
   
-  def _get_termination(self, state: mjx_env.State) -> jax.array:
+  def _get_termination(self, state: mjx_env.State) -> jax.Array:
      qpos = state.data.qpos
      out_of_bounds = jp.abs(qpos[0]) > 9.5 or jp.abs(qpos[1]) > 9.5 or jp.abs(qpos[2]) > 0.5 # Check if x, y, or z position is out of bounds
      has_fallen = self.get_upvector(state.data)[-1] < 0.0 # Check if the robot has fallen
@@ -477,7 +511,7 @@ class CaveExplore(reachbot_base.ReachbotEnv):
     total_lidar_rays = self._lidar_num_horizontal_rays * self._lidar_num_vertical_rays
     ranges = jp.full(total_lidar_rays, self._lidar_max_range, dtype=jp.float32)
     
-    imu_quat = mjx_env.get_sensor_data(self.mj_model, data, consts.ORIENTATION_SENSOR)
+    imu_quat = mjx_env.get_sensor_data(self._active_env["mj_model"], data, consts.ORIENTATION_SENSOR)
 
     horizontal_angles = jp.linspace(-self._lidar_horizontal_angle_range / 2, 
                                      self._lidar_horizontal_angle_range / 2, 
@@ -499,13 +533,19 @@ class CaveExplore(reachbot_base.ReachbotEnv):
             local_ray_dir_z = jp.sin(v_angle)
             local_ray_dir = jp.array([local_ray_dir_x, local_ray_dir_y, local_ray_dir_z])
             
-            world_ray_dir = math.quat_rotate(imu_quat, local_ray_dir)
+            rot_mat = math.quat_to_mat(imu_quat)
+            world_ray_dir = rot_mat @ local_ray_dir
             
             norm = jp.linalg.norm(world_ray_dir)
             world_ray_dir = world_ray_dir / (norm + 1e-6)
 
-            hit_dist = mjx.ray(self.mjx_model, data, head_pos, world_ray_dir, 
-                               None, True, self._torso_body_id, -1)
+            # Cast ray - use geomgroup to filter collision detection
+            # Create collision mask: only collide with cave walls (contype=2)
+            # Bit 1 corresponds to contype=2 (cave walls), exclude bit 0 (contype=1, robot parts)
+            geomgroup = [0, 1, 0, 0, 0, 0]  # Only enable group 1 for cave walls
+            
+            hit_dist, hit_geom_id = mjx.ray(self.mjx_model, data, head_pos, world_ray_dir, 
+                               geomgroup)
 
             current_range = jp.where(hit_dist >= 0.0, 
                                      jp.minimum(hit_dist, self._lidar_max_range), 
@@ -681,61 +721,29 @@ class CaveExplore(reachbot_base.ReachbotEnv):
     boom_extension_speed = jp.sum(jp.abs(qvel[boom_indices]))
     return boom_extension_speed
 
-  def _calculate_observation_sizes(self):
-    """Calculate the sizes of observation and privileged state arrays"""
-    # Basic components size calculation
-    linvel_size = 3  # Local linear velocity
-    gyro_size = 3    # Gyroscope data
-    gravity_size = 3  # Gravity direction
+  
     
-    # Joint information
-    joint_angles_size = len(self._default_pose)  # Joint angles
-    joint_vel_size = self.mjx_model.nv - 6  # Joint velocities (excluding root)
-    
-    # Last action size
-    last_act_size = self.mjx_model.nu
-    
-    # LIDAR data size
-    lidar_size = self._lidar_num_horizontal_rays * self._lidar_num_vertical_rays
-    
-    # Calculate state size (regular observation)
-    self.observation_size = (
-        linvel_size + 
-        gyro_size + 
-        gravity_size + 
-        joint_angles_size + 
-        joint_vel_size + 
-        last_act_size + 
-        lidar_size
-    )
-    
-    # Additional privileged state components
-    accelerometer_size = 3
-    additional_gyro_size = 3
-    additional_gravity_size = 3
-    additional_linvel_size = 3
-    angvel_size = 3
-    additional_joint_vel_size = joint_vel_size
-    actuator_force_size = self.mjx_model.nu
-    feet_contact_size = len(self._feet_geom_id)
-    feet_vel_size = len(self._feet_geom_id) * 3
-    feet_air_time_size = len(self._feet_geom_id)
-    xfrc_applied_size = 3  # Only using the force part, not torque
-    pert_indicator_size = 1
-    
-    # Calculate privileged state size
-    self.privileged_state_size = (
-        self.observation_size +  # Regular observation
-        additional_gyro_size + 
-        accelerometer_size + 
-        additional_gravity_size + 
-        additional_linvel_size + 
-        angvel_size + 
-        additional_joint_vel_size + 
-        actuator_force_size +
-        feet_contact_size + 
-        feet_vel_size + 
-        feet_air_time_size + 
-        xfrc_applied_size + 
-        pert_indicator_size
-    )
+  # Accessors.
+
+  @property
+  def xml_path(self) -> str:
+    """Path to the xml file for the environment."""
+    return self._active_env["xml_path"]
+
+  @property
+  def action_size(self) -> int:
+    """Size of the action space."""
+    joints = self._active_env["mj_model"].nu
+    if self._config.stickiness_config.enable:
+      return 4 + joints
+    else:
+      return joints
+
+  @property
+  def mj_model(self) -> MjModel:
+    return self._active_env["mj_model"]
+
+  @property
+  def mjx_model(self) -> mjx.Model:
+    return self._active_env["mjx_model"]
+

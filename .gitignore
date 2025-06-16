@@ -46,6 +46,7 @@ Pipfile.lock     # if using Pipenv
 .env.test.local
 .env.production.local
 .DS_Store
+.ubuntuHome
 
 # Logs
 *.log

@@ -21,11 +21,20 @@ from etils import epath
 
 from mujoco_playground._src import mjx_env
 
+from enum import Enum
+
 #ROOT_PATH = mjx_env.ROOT_PATH / "reachbot"
 from etils import epath
-ROOT_PATH = mjx_env.ROOT_PATH / "xmls" / "scenes"
+#ROOT_PATH = mjx_env.ROOT_PATH / "xmls" / "scenes"
+ROOT_PATH = epath.Path(__file__).parent.parent.parent / "xmls"
 
-STANDARD_XML = (ROOT_PATH / "scene_basic.xml")
+
+class ReachbotModelType(Enum):
+  BASIC = "basic"
+  DEFLECTION = "deflection"
+
+
+STANDARD_XML = (ROOT_PATH / "scene_reachbot_cave.xml")
 FEET_ONLY_XML = (
     ROOT_PATH / "scene_feetonly.xml"
 )
@@ -43,7 +52,7 @@ DEFLECTION_FRICTION_XML = (
 def task_to_xml(task_name: str) -> epath.Path:
   print("task name: " + task_name)
   return {
-      "standard": STANDARD_XML,
+      "reachbot_basic": STANDARD_XML,
       "reachbot_basic_feet_only": FEET_ONLY_XML,
       "reachbot_deflection": DEFLECTION_XML,
       "reachbot_friction_basic": BASIC_FRICTION_XML,

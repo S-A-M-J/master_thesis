@@ -4,6 +4,10 @@ This repository contains the code for training a reinforcement learning model to
 
 ## Installation
 
+0. Requirements:
+
+   Make sure to have cuda 12 or higher installed wherever you're running the training.
+
 1. Create a virtual environment with Python. Tested with Python 3.12 but other versions should work as well.
 
    ```bash
@@ -54,11 +58,3 @@ In the terminal, run the following command to train the model.
    ```bash
    python train.py
    ```
-
-### Google Colab
-
-- Clone repo into your google drive.
-- Open the `train_reachbot_in_colab.ipynb` notebook in Google Colab.
-- Change runtime to GPU.
-- Run all install cells and when asked to mount google drive, click on the link and authenticate.
-- Run the remaining cells in the notebook to train the model.

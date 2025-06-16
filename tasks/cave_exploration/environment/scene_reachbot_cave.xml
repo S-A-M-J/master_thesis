@@ -1,4 +1,4 @@
-<mujoco model="reachbot basic flat terrain scene">
+<mujoco model="reachbot martian cave scene">
 
   <option iterations="4" ls_iterations="8" timestep="0.004" integrator="Euler" jacobian="dense" gravity="0 0 -3.728" >
      <flag eulerdamp="disable"/>
@@ -9,7 +9,7 @@
     <numeric data="30" name="max_geom_pairs"/>
   </custom>
 
-  <include file="reachbot_basic/reachbot.xml"/>
+  <include file="{REACHBOT_MODEL_PATH}"/>
   <statistic center="0 0 0.1" extent="20" meansize="0.04"/>
 
   <visual>
@@ -26,32 +26,17 @@
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="1 1 1" rgb2="1 1 1" markrgb="0 0 0"
       width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0"/>
-    <texture type="2d" name="cave_wall" file="assets/rocky_texture.png"/>
-    <material name="cave_wall" texture="cave_wall" texuniform="true" texrepeat="5 5" reflectance=".8"/>
-    <mesh name="cave" file="cave_meshes/cave_tunnel.stl" scale="1 1 1" maxhullvert="150"/>
+    <!--<texture type="2d" name="cave_wall" file="assets/rocky_texture.png"/>-->
+    <material name="cave_wall" texuniform="true" texrepeat="5 5" reflectance=".8"/>
+    <!--<mesh name="cave" file="cave_meshes/cave_tunnel.stl" scale="1 1 1" maxhullvert="150"/>-->
   </asset>
 
   <worldbody>
    <!--<geom name="floor" pos="0 0 0" size="0 0 0.01" type="plane" material="groundplane" priority="1" friction="0.6" condim="3" contype="0" conaffinity="0"/> -->
     <!-- <geom name="cave" type="mesh" mesh="cave" pos="0 0 0" size="1 1 1" material="cavewall" mass="0" priority="2" friction="0.6" condim="3" contype="0" conaffinity="0"/> -->
     <body name="cave_boxes" pos="0 -2 1">
-       <include file="cave_meshes/cave_tunnel_boxes.xml"/>
+       <include file="{CAVE_BOXES_PATH}"/>
       </body>
   </worldbody>
 
-  <keyframe>
-    <!-- The qpos attribute specifies the joint positions for this keyframe. -->
-    <key name="home" qpos="
-    1 0 3
-    1 0 0 0
-    0 0.7 0.3
-    0 0.7 0.3
-    0 0.7 0.3
-    0 0.7 0.3"
-      ctrl="
-    0 0.7 0.3
-    0 0.7 0.3
-    0 0.7 0.3
-    0 0.7 0.3"/>
-  </keyframe>
 </mujoco>

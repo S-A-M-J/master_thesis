@@ -262,7 +262,7 @@ def save_mujoco_boxes(voxels, voxel_size, filename):
             x, y, z = position
             sx, sy, sz = size
              # Contype and conaffinity are set to 2 and 1 respectively to avoid collisions with other cave wall primitives
-            f.write(f'    <geom name="box_{i}" type="box" pos="{x} {y} {z}" size="{sx} {sy} {sz}" material="cave_wall" contype="2" conaffinity="1"/>\n')
+            f.write(f'    <geom name="cave_wall_box_{i}" type="box" pos="{x} {y} {z}" size="{sx} {sy} {sz}" material="cave_wall" contype="2" conaffinity="1"/>\n')
         
         f.write('</body>')
 
@@ -423,8 +423,12 @@ if __name__ == "__main__":
     # Setup command line arguments
     parser = argparse.ArgumentParser(description="Generate cave tunnels for MuJoCo")
     parser.add_argument("--count", type=int, default=3, help="Number of caves to generate")
-    parser.add_argument("--output-dir", type=str, default="/Users/sam/Documents/MasterThesis/code/Reachbot_RL_Mission/CaveMission/cave_environment/caves", 
-                        help="Base output directory for caves")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "caves"),
+        help="Base output directory for caves (default: ../caves relative to this script)"
+    )
     args = parser.parse_args()
     
     # Create base caves directory if it doesn't exist
@@ -433,11 +437,11 @@ if __name__ == "__main__":
     # Generate multiple caves
     caves_summary = []
     for i in range(args.count):
-        cave_id = f"cave_{i:03d}"
+        cave_id = i + 1
         print(f"\nGenerating {cave_id}...")
         
         # Create subdirectory for this cave
-        cave_dir = os.path.join(args.output_dir, cave_id)
+        cave_dir = os.path.join(args.output_dir, f"cave_{cave_id:03d}")
         os.makedirs(cave_dir, exist_ok=True)
         
         # Generate caves with different curve intensities

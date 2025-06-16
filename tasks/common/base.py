@@ -25,6 +25,7 @@ from ml_collections import config_dict
 import mujoco
 from mujoco import mjx
 from mujoco import MjModel  # type: ignore
+from models.model_loader import ReachbotModelType, get_model_path
 
 from mujoco_playground._src import mjx_env
 # Replace this with custom constants
@@ -44,14 +45,16 @@ class ReachbotEnv(mjx_env.MjxEnv):
 
   def __init__(
       self,
-      xml_path: str,
+      scene_xml: epath.Path,
+      model_type: ReachbotModelType, 
       config: config_dict.ConfigDict,
       config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
   ) -> None:
     super().__init__(config, config_overrides)
 
-    self._mj_model = MjModel.from_xml_string(
-        epath.Path(xml_path).read_text(), assets=get_assets()
+    # Use from_xml_path to ensure <include file="..."/> statements are resolved relative to the XML file's directory.
+    self._mj_model = MjModel.from_xml_path(
+        xml_path, assets=get_assets()
     )
     self._mj_model.opt.timestep = self._config.sim_dt
 
@@ -73,8 +76,6 @@ class ReachbotEnv(mjx_env.MjxEnv):
     self._mjx_model = mjx.put_model(self._mj_model)
     self._xml_path = xml_path
     self._imu_site_id = self._mj_model.site("imu").id
-
-  # Sensor readings.
 
   def get_upvector(self, data: mjx.Data) -> jax.Array:
     return mjx_env.get_sensor_data(self.mj_model, data, consts.UPVECTOR_SENSOR)
