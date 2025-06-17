@@ -652,7 +652,7 @@ class CaveExplore(mjx_env.MjxEnv):
   
   def _reward_target_distance(self, qpos: jax.Array, target_pos: jax.Array) -> jax.Array:
     # Reward for distance to target.
-    return jp.linalg.norm(qpos - target_pos) * self._config.reward_config.scales.target_distance
+    return jp.linalg.norm(qpos - target_pos) * self._config.reward_config.scales.distance_to_target
   
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
     # Reward for exploration rate.
