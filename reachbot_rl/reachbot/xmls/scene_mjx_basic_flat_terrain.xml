@@ -1,5 +1,5 @@
 <mujoco model="reachbot basic flat terrain scene">
-  <include file="reachbot/xmls/reachbot_basic/reachbot.xml"/>
+  <include file="reachbot_basic/reachbot.xml"/>
 
   <statistic center="0 0 0.1" extent="0.8" meansize="0.04"/>
 

@@ -1,4 +1,5 @@
 
+import mujoco
 import os
 
 import jax
@@ -26,9 +27,11 @@ from ml_collections import config_dict
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-relative_ckpt_path = "joystick_2025-03-14_03-55-16"
+relative_ckpt_path = "joystick_2025-06-17_15-23-05"
 
 ckpt_path = os.path.join(script_dir, relative_ckpt_path)
+
+
 
 # Get the configuration for the environment
 import json
@@ -36,8 +39,10 @@ with open(os.path.join(ckpt_path, 'config.json'), 'r') as f:
     loaded_config = json.load(f)
 # Get the default environment configuration (a ConfigDict).
 if 'joystick' in relative_ckpt_path:
+    print('Rendering joystick task result')
     env_cfg = reachbot_joystick_config()
 elif 'getup' in relative_ckpt_path:
+    print('Rendering getup task result')
     env_cfg = reachbot_getup_config()
 else:
     print('Unknown task')
@@ -81,7 +86,7 @@ make_inference_fn, params, _ = train_fn(
 )
 
 # Load the trained model
-params = model.load_params(os.path.join(relative_ckpt_path,'params'))
+params = model.load_params(os.path.join(ckpt_path,'params'))
 
 # Jit everything
 jit_reset = jax.jit(env.reset)
@@ -115,7 +120,7 @@ for _ in range(n_episodes):
     width = 1920  # Full HD width (default is usually 640)
     height = 1080  # Full HD height (default is usually 480)
     frames = env.render(rollout[::render_every], camera='track', width=width, height=height)
-    video_path = os.path.join(relative_ckpt_path, 'posttraining3.mp4')
+    video_path = os.path.join(ckpt_path, 'posttraining3.mp4')
     fps = 1.0 / env.dt
 
 import imageio

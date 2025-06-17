@@ -12,20 +12,6 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-NVIDIA_ICD_CONFIG_PATH = '/usr/share/glvnd/egl_vendor.d/10_nvidia.json'
-if not os.path.exists(NVIDIA_ICD_CONFIG_PATH):
-  with open(NVIDIA_ICD_CONFIG_PATH, 'w') as f:
-    f.write("""{
-    "file_format_version" : "1.0.0",
-    "ICD" : {
-        "library_path" : "libEGL_nvidia.so.0"
-    }
-}
-""")
-
-#Configure MuJoCo to use the EGL rendering backend (requires GPU)
-print('Setting environment variable to use GPU rendering:')
-os.environ['MUJOCO_GL'] = 'egl'
 
 # Tell XLA to use Triton GEMM, this    pip install numpy<2.0 improves steps/sec by ~30% on some GPUs
 xla_flags = os.environ.get('XLA_FLAGS', '')
@@ -42,6 +28,7 @@ from jax import numpy as jp
 #jax.config.update('jax_default_matmul_precision', 'high')
 jax.config.update("jax_debug_nans", True)
 # Check if GPU is available
+
 gpu_available = jax.devices()[0].platform == 'gpu'
 print(f"GPU available: {gpu_available}")
 
@@ -70,6 +57,7 @@ import json
 from datetime import datetime
 import functools
 
+import os
 # Run the code on the CPU rather than the GPU
 # Normally the code runs on the GPU or any other accelerator that is available
 #os.environ['JAX_PLATFORM_NAME'] = 'cpu'
@@ -87,6 +75,8 @@ from tasks.common.randomize import domain_randomize as reachbot_randomize
 from mujoco_playground import registry
 
 from tensorboardX import SummaryWriter
+
+
 
 ENV_STR = 'Go1JoystickFlatTerrain'
 
@@ -107,15 +97,15 @@ def save_video(frames, video_path, fps):
 
 def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
-  # Original implementation
-  # env = registry.load('cartpole_balance')
-  # env_cfg = registry.get_default_config(cartpole_balance)
-  # Create a custom environment
+  # Create log directory for training run
+  datetime_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+  logdir = os.path.join(os.path.dirname(__file__), "logs/cave_exploration"+datetime_str)
+  os.makedirs(logdir, exist_ok=True) 
+  
+
+
   from tasks.cave_exploration.cave_exploration import default_config as reachbot_config
   env_cfg = reachbot_config()
-  #env_cfg.reward_config.scales.posture = 0.0
-  #env_cfg.reward_config.dof_vel = -0.1
-  #env_cfg.pert_config.enable = True
   env = CaveExplore(config=env_cfg, lidar_num_horizontal_rays=20, lidar_max_range=15.0, lidar_horizontal_angle_range=jp.pi * 2, lidar_vertical_angle_range=jp.pi / 6) # Updated LIDAR params for 3D
 
   ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
@@ -138,17 +128,12 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
   for key, value in ppo_training_params.items():
       print(f"  {key}: {value}")
-  #sac_params = dm_control_suite_params.brax_sac_config(ENV_STR)
   timesteps = []
   rewards = []
   total_rewards = []
   total_rewards_std = []
 
-  datetime_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-  new_folder_path = "joystick_"+datetime_str
-  import os
-  os.makedirs(new_folder_path, exist_ok=True) 
-  writer = SummaryWriter(logdir='cave_exploration/'+new_folder_path)
+  writer = SummaryWriter(logdir=logdir)
 
 
   # Function to display the training progress
@@ -166,7 +151,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
     for key, value in metrics.items():
         writer.add_scalar(key, value, num_steps)
         writer.flush()
-    print(f"step: {num_steps}, reward: {y_data[-1]:.3f} +/- {y_dataerr[-1]:.3f}")
+    print(f"step: {num_steps}/{ppo_params_input["num_timesteps"]}, reward: {y_data[-1]:.3f} +/- {y_dataerr[-1]:.3f}")
 
   
   # Getting the network factory
@@ -179,10 +164,6 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
         **ppo_params.network_factory
     )
 
-
-  datetime_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-  # Save the frames as a video file
-  # Create a new folder with datetime_str as name
 
   def policy_params_fn(current_step, make_policy, params):
     del make_policy  # Unused.
@@ -298,5 +279,6 @@ if __name__ == '__main__':
     ppo_training_params["batch_size"] = 256 # Reduce from 1024
     ppo_training_params["num_minibatches"] = 16 # Reduce from 32
     ppo_training_params["num_updates_per_batch"] = 8 # Reduce from 16
-    ppo_training_params["unroll_length"] = 20
+    ppo_training_params["unroll_length"] = 50
+    ppo_training_params["entropy_cost"] = 0.02
     trainModel(ppo_training_params)

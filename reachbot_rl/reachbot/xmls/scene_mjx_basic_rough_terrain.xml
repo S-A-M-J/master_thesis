@@ -1,5 +1,5 @@
 <mujoco model="reachbot basic flat terrain scene">
-  <include file="reachbot/xmls/reachbot_basic/reachbot.xml"/>
+  <include file="models/basic/reachbot.xml"/>
 
   <statistic center="0 0 0.1" extent="0.8" meansize="0.04"/>
 
@@ -25,19 +25,5 @@
    <geom name="floor" type="hfield" hfield="hfield" material="groundplane" contype="1" conaffinity="0" priority="1" friction="1.0"/>
   </worldbody>
 
-  <keyframe>
-    <!-- The qpos attribute specifies the joint positions for this keyframe. -->
-    <key name="home" qpos="
-    0 0 0.4
-    1 0 0 0
-    0 0.7 0.3
-    0 0.7 0.3
-    0 0.7 0.3
-    0 0.7 0.3"
-      ctrl="
-    0 0.7 0.3
-    0 0.7 0.3
-    0 0.7 0.3
-    0 0.7 0.3"/>
-  </keyframe>
+
 </mujoco>

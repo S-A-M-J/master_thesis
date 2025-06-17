@@ -24,7 +24,7 @@ from mujoco_playground._src import mjx_env
 #ROOT_PATH = mjx_env.ROOT_PATH / "reachbot"
 from etils import epath
 
-ROOT_PATH = epath.Path("reachbot")
+ROOT_PATH = epath.Path("reachbot_rl/reachbot")
 FEET_ONLY_FLAT_TERRAIN_XML = (
     ROOT_PATH / "xmls" / "scene_mjx_feetonly_flat_terrain.xml"
 )

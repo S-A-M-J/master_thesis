@@ -168,7 +168,6 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
   # Function to display the training progress
   def progress(num_steps, metrics):
-
     times.append(datetime.now())
     x_data.append(num_steps)
     y_data.append(metrics["eval/episode_reward"])
@@ -181,7 +180,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
     for key, value in metrics.items():
         writer.add_scalar(key, value, num_steps)
         writer.flush()
-    print(f"step: {num_steps}, reward: {y_data[-1]:.3f} +/- {y_dataerr[-1]:.3f}")
+    print(f"step: {num_steps}/{ppo_params_input["num_timesteps"]}, reward: {y_data[-1]:.3f} +/- {y_dataerr[-1]:.3f}")
 
   
   # Getting the network factory
