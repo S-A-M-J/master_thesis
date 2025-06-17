@@ -29,7 +29,7 @@ class CaveBatchLoader:
         print(f"Loading {len(chosen_folders)} cave environments.")
 
         # Load the scene_reachbot_cave.xml template
-        template_path = "/home/sam/master_thesis/tasks/cave_exploration/environment/scene_reachbot_cave.xml"
+        template_path = os.path.join(os.path.dirname(__file__), "scene_reachbot_cave.xml")
         with open(template_path, "r") as f:
             scene_template = f.read()
         for folder in chosen_folders:
@@ -92,4 +92,3 @@ class CaveBatchLoader:
                 "folder": folder
             })
 
-    

@@ -58,3 +58,4 @@ Pipfile.lock     # if using Pipenv
 !setup.py
 !Pipfile
 master_thesis_pyenv/
+*.ubuntuHome
