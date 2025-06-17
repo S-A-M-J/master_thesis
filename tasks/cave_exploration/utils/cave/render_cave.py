@@ -2,6 +2,9 @@ import mujoco
 import mujoco.viewer
 import argparse
 
+from environment.env_loader import CaveBatchLoader
+from cave_exploration import 
+
 def render_mesh( scale=1.0):
     """
     Render a mesh STL file in MuJoCo.
@@ -36,11 +39,7 @@ def render_mesh( scale=1.0):
 
 def main():
     print("MuJoCo Mesh Viewer")
-    parser = argparse.ArgumentParser(description='Render a mesh STL file in MuJoCo')
-    parser.add_argument('--scale', type=float, default=1.0, help='Scale factor for the mesh')
-    args = parser.parse_args()
-    
-    render_mesh(args.scale)
+    envs = CaveBatchLoader(1, )
 
 if __name__ == "__main__":
     main()
