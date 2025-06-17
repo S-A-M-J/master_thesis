@@ -312,20 +312,36 @@ class CaveExplore(mjx_env.MjxEnv):
     actuator_action = action[:self.mjx_model.nu]         # e.g., shape (8,)
     stickiness_action = action[self.mjx_model.nu:] 
     motor_targets = state_formatted + actuator_action * self._config.action_scale
+    # Handle contacts properly - in MJX, contacts is a struct with arrays
     contacts = state.data.contact
-
-    # Efficiently build contact array for each foot geom based on prefiltered contacts
-    contact_set = set()
-    for c in contacts:
-        if (c.geom1 in self._feet_geom_id and c.geom2 in self._floor_geom_ids):
-            contact_set.add(c.geom1)
-        elif (c.geom2 in self._feet_geom_id and c.geom1 in self._floor_geom_ids):
-            contact_set.add(c.geom2)
-    contact = jp.array([geom_id in contact_set for geom_id in self._feet_geom_id])
+    
+    # Check if there are any contacts first
+    if state.data.ncon > 0:
+        # Get contact geom pairs - contacts.geom is shape (ncon, 2)
+        contact_geom1 = contacts.geom[:, 0]  # First geom in each contact
+        contact_geom2 = contacts.geom[:, 1]  # Second geom in each contact
+        
+        # Find contacts between feet and floor
+        feet_floor_contacts1 = jp.isin(contact_geom1, self._feet_geom_id) & jp.isin(contact_geom2, self._floor_geom_ids)
+        feet_floor_contacts2 = jp.isin(contact_geom2, self._feet_geom_id) & jp.isin(contact_geom1, self._floor_geom_ids)
+        
+        # Get the foot geom IDs that are in contact
+        foot_contacts1 = jp.where(feet_floor_contacts1, contact_geom1, -1)
+        foot_contacts2 = jp.where(feet_floor_contacts2, contact_geom2, -1)
+        
+        # Combine both cases and filter out -1 values
+        all_foot_contacts = jp.concatenate([foot_contacts1, foot_contacts2])
+        valid_foot_contacts = all_foot_contacts[all_foot_contacts >= 0]
+        
+        # Create contact array for each foot
+        contact = jp.array([jp.any(valid_foot_contacts == geom_id) for geom_id in self._feet_geom_id])
+    else:
+        # No contacts detected
+        contact = jp.zeros(len(self._feet_geom_id), dtype=bool)
 
     if self._config.stickiness_config.enable:
-      # Apply stickiness force if enabled
-      xfrc_applied = self._apply_stickiness_forces(state, stickiness_action)
+      # Apply stickiness force if enabled - pass contact information to avoid recomputing
+      xfrc_applied = self._apply_stickiness_forces(state, stickiness_action, contacts)
       state = state.replace(data=state.data.replace(xfrc_applied=xfrc_applied))
 
     data = mjx_env.step(
@@ -356,21 +372,28 @@ class CaveExplore(mjx_env.MjxEnv):
     state = state.replace(data=data, obs=obs, reward=reward, done=done)
     return state
   
-  def _apply_stickiness_forces(self, state: mjx_env.State, stickiness_ctrl: jax.Array) -> jax.Array:
+  def _apply_stickiness_forces(self, state: mjx_env.State, stickiness_ctrl: jax.Array, contacts) -> jax.Array:
     """Applies a stickiness force to the robot when a boom end touches a cave wall and 
     the corresponding stickiness control from the neural network is activated"""
     
     # Initialize external forces array
     xfrc_applied = jp.zeros((self._active_env["mjx_model"].nbody, 6))
     
-    # Check contacts for each boom
+    # Check if there are any contacts first
+    if state.data.ncon == 0:
+        return xfrc_applied
+    
+    # Get contact geom pairs - contacts.geom is shape (ncon, 2)
+    contact_geom1 = contacts.geom[:, 0]  # First geom in each contact
+    contact_geom2 = contacts.geom[:, 1]  # Second geom in each contact
+    
+    # Find contacts between boom ends and cave walls
     boom_idxs = []
     wall_idxs = []
     
-    # Find contacts between boom ends and cave walls
-    for i, contact in enumerate(state.data.contact):
-      geom1_id = contact.geom1
-      geom2_id = contact.geom2
+    for i in range(state.data.ncon):
+      geom1_id = contact_geom1[i]
+      geom2_id = contact_geom2[i]
       
       # Get geom names
       geom1_name = self._active_env["mjx_model"].geom_id2name[geom1_id] if geom1_id < len(self._active_env["mjx_model"].geom_id2name) else ""
