@@ -331,10 +331,10 @@ class CaveExplore(mjx_env.MjxEnv):
         
         # Combine both cases and filter out -1 values
         all_foot_contacts = jp.concatenate([foot_contacts1, foot_contacts2])
-        valid_foot_contacts = all_foot_contacts[all_foot_contacts >= 0]
         
-        # Create contact array for each foot
-        contact = jp.array([jp.any(valid_foot_contacts == geom_id) for geom_id in self._feet_geom_id])
+        # Create contact array for each foot by checking if any contact matches each foot geom ID
+        # We don't need to filter out -1 values, just check if any valid contact matches
+        contact = jp.array([jp.any((all_foot_contacts == geom_id) & (all_foot_contacts >= 0)) for geom_id in self._feet_geom_id])
     else:
         # No contacts detected
         contact = jp.zeros(len(self._feet_geom_id), dtype=bool)
