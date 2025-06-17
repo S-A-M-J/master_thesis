@@ -589,7 +589,7 @@ class CaveExplore(mjx_env.MjxEnv):
     del metrics  # Unused.
     return {
         "distance_to_target": self._reward_target_distance(
-            data.qpos[0:3], info["target_pos"]
+            data.qpos[0:3], jp.array(info["target_pos"])
         ),
         "exploration_rate": self._reward_exploration_rate(data.qpos[0:3]),
         "lin_vel_z": self._cost_lin_vel_z(self.get_global_linvel(data)),
