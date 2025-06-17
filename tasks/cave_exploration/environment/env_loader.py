@@ -5,7 +5,7 @@ import json
 from mujoco import mjx, MjModel  # Make sure mujoco's mjx Python bindings are installed
 from models.model_loader import ReachbotModelType, ReachbotModel
 
-CAVES_DIR = "/home/sam/master_thesis/tasks/cave_exploration/environment/caves"
+CAVES_DIR = os.path.join(os.path.dirname(__file__), "caves")
 
 class CaveBatchLoader:
     def __init__(self, batch_size, config, reachbot_model_type=ReachbotModelType.BASIC):

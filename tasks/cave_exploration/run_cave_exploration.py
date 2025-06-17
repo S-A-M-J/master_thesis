@@ -288,18 +288,15 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
 # Main function
 if __name__ == '__main__':
-  parser = argparse.ArgumentParser(description='Train a model with optional Sherlock flag.')
-  parser.add_argument('--on_sherlock', action='store_true', help='Flag to indicate if running on Sherlock')
-  args = parser.parse_args()
-
   ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
   ppo_training_params = dict(ppo_params)
   for i in range(1):
     # Modify params for faster training
     ppo_training_params["num_timesteps"] = 10_000_000 # Reduce from 60000000
     ppo_training_params["episode_length"] = 1000 + i * 1000 # Reduce from 1000
-    #ppo_training_params["num_envs"] = 2048 # Reduce from 2048
-    #ppo_training_params["batch_size"] = 256 # Reduce from 1024
-    #ppo_training_params["num_minibatches"] = 16 # Reduce from 32
-    #ppo_training_params["num_updates_per_batch"] = 8 # Reduce from 16
-    trainModel(ppo_training_params, on_sherlock=args.on_sherlock)
+    ppo_training_params["num_envs"] = 2048 # Reduce from 2048
+    ppo_training_params["batch_size"] = 256 # Reduce from 1024
+    ppo_training_params["num_minibatches"] = 16 # Reduce from 32
+    ppo_training_params["num_updates_per_batch"] = 8 # Reduce from 16
+    ppo_training_params["unroll_length"] = 20
+    trainModel(ppo_training_params)

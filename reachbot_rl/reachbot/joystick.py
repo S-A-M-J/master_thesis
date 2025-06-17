@@ -112,7 +112,7 @@ class Joystick(reachbot_base.ReachbotEnv):
 
   def __init__(
       self,
-      task: str = "flat_terrain_deflection",
+      task: str = "flat_terrain_basic",
       config: config_dict.ConfigDict = default_config(),
       config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
   ):

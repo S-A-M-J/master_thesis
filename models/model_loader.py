@@ -1,8 +1,10 @@
 from enum import Enum
 import mujoco
 from mujoco import MjModel
+import os
 
-MODEL_DIR = "/home/sam/master_thesis/models"
+MODEL_DIR = os.path.join(os.path.dirname(__file__))
+
 
 class ReachbotModelType(Enum):
     BASIC = "basic"

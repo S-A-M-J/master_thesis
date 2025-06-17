@@ -35,7 +35,7 @@ Pipfile.lock     # if using Pipenv
 
 # IDE specific files
 .idea/
-.vscode/
+.vscode
 *.swp
 *.swo
 
@@ -58,4 +58,7 @@ Pipfile.lock     # if using Pipenv
 !setup.py
 !Pipfile
 master_thesis_pyenv/
+
 *.ubuntuHome
+.vscode
+events.*
