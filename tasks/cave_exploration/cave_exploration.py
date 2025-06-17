@@ -68,6 +68,7 @@ def default_config() -> config_dict.ConfigDict:
             
             # Base movement rewards
             orientation=-0.2,           # Penalty scale for orientation deviation (based on upwards vector sensor). Default is -5.0
+            distance_to_target=1.0      # Reward scale for distance to target
             
             # Other rewards
             dof_pos_limits=-1.0,        # Penalty scale for degree of freedom position limits. Default is -1.0
