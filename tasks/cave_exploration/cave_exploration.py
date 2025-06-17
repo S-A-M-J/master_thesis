@@ -69,10 +69,15 @@ def default_config() -> config_dict.ConfigDict:
             # Base movement rewards
             orientation=-0.2,           # Penalty scale for orientation deviation (based on upwards vector sensor). Default is -5.0
             distance_to_target=1.0,     # Reward scale for distance to target
+            exploration_rate=1.0,       # Reward scale for exploration rate
+            lin_vel_z=-0.1,            # Penalty scale for linear velocity in z-direction
+            ang_vel_xy=-0.1,           # Penalty scale for angular velocity in xy-plane
             
             # Other rewards
             dof_pos_limits=-1.0,        # Penalty scale for degree of freedom position limits. Default is -1.0
             pose=0.0,                   # Reward scale for maintaining a specific pose. Default is 0.5
+            feet_slip=-0.01,           # Penalty scale for feet slipping
+            boom_extension_speed=-0.01, # Penalty scale for boom extension speed
             
             # Termination and stand-still penalties
             termination=-1.0,           # Penalty scale for termination conditions. Default is -1.0
@@ -644,7 +649,7 @@ class CaveExplore(mjx_env.MjxEnv):
       qvel: jax.Array,
   ) -> jax.Array:
     
-    return jp.sum(jp.square(qvel)) * self._config.reward_config.scales.stand_still
+    return jp.sum(jp.square(qvel))
 
   def _cost_termination(self, done: jax.Array) -> jax.Array:
     # Penalize early termination.
@@ -652,7 +657,7 @@ class CaveExplore(mjx_env.MjxEnv):
   
   def _reward_target_distance(self, qpos: jax.Array, target_pos: jax.Array) -> jax.Array:
     # Reward for distance to target.
-    return jp.linalg.norm(qpos - target_pos) * self._config.reward_config.scales.distance_to_target
+    return jp.linalg.norm(qpos - target_pos)
   
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
     # Reward for exploration rate.
