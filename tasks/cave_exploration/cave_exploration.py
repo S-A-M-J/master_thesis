@@ -68,7 +68,7 @@ def default_config() -> config_dict.ConfigDict:
             
             # Base movement rewards
             orientation=-0.2,           # Penalty scale for orientation deviation (based on upwards vector sensor). Default is -5.0
-            distance_to_target=1.0      # Reward scale for distance to target
+            distance_to_target=1.0,     # Reward scale for distance to target
             
             # Other rewards
             dof_pos_limits=-1.0,        # Penalty scale for degree of freedom position limits. Default is -1.0
@@ -283,7 +283,6 @@ class CaveExplore(mjx_env.MjxEnv):
         "last_act": jp.zeros(self.mjx_model.nu),
         "last_last_act": jp.zeros(self.mjx_model.nu),
         "last_contact": jp.zeros(len(self._feet_geom_id), dtype=bool),
-        "feet_air_time": jp.zeros(len(self._feet_geom_id)),
         "steps_until_next_pert": steps_until_next_pert,
         "pert_duration_seconds": pert_duration_seconds,
         "pert_duration": pert_duration_steps,
@@ -497,7 +496,6 @@ class CaveExplore(mjx_env.MjxEnv):
         data.actuator_force,  # 12
         info["last_contact"],  # 4
         feet_vel,  # 4*3
-        info["feet_air_time"],  # 4
         data.xfrc_applied[self._torso_body_id, :3],  # 3
         info["steps_since_last_pert"] >= info["steps_until_next_pert"],  # 1
     ])
@@ -631,7 +629,7 @@ class CaveExplore(mjx_env.MjxEnv):
   
   def _reward_target_distance(self, qpos: jax.Array, target_pos: jax.Array) -> jax.Array:
     # Reward for distance to target.
-    return jp.linalg.norm(qpos - target_pos)
+    return jp.linalg.norm(qpos - target_pos) * self._config.reward_config.scales.target_distance
   
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
     # Reward for exploration rate.

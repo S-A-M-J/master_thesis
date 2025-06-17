@@ -99,7 +99,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
   # Create log directory for training run
   datetime_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-  logdir = os.path.join(os.path.dirname(__file__), "logs/cave_exploration"+datetime_str)
+  logdir = os.path.join(os.path.dirname(__file__), "logs/cave_exploration-"+datetime_str)
   os.makedirs(logdir, exist_ok=True) 
   
 
@@ -151,7 +151,8 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
     for key, value in metrics.items():
         writer.add_scalar(key, value, num_steps)
         writer.flush()
-    print(f"step: {num_steps}/{ppo_params_input["num_timesteps"]}, reward: {y_data[-1]:.3f} +/- {y_dataerr[-1]:.3f}")
+    percent_complete = (num_steps / ppo_training_params["num_timesteps"]) * 100
+    print(f"step: {num_steps}/{ppo_training_params['num_timesteps']} ({percent_complete:.1f}%), reward: {y_data[-1]:.3f} +/- {y_dataerr[-1]:.3f}")
 
   
   # Getting the network factory
@@ -169,7 +170,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
     del make_policy  # Unused.
     orbax_checkpointer = ocp.PyTreeCheckpointer()
     save_args = orbax_utils.save_args_from_target(params)
-    checkpoint_path = os.path.join(new_folder_path, 'checkpoints')
+    checkpoint_path = os.path.join(logdir, 'checkpoints')
     path = os.path.join(checkpoint_path, f"{current_step}")
     abs_path = os.path.abspath(path)
     orbax_checkpointer.save(abs_path, params, force=True, save_args=save_args)
@@ -205,7 +206,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
       "env_cfg": env_cfg.to_dict(),
       "ppo_params": ppo_training_params
   }
-  config_path = os.path.join(new_folder_path, 'config.json')
+  config_path = os.path.join(logdir, 'config.json')
   # Replace Infinity with a large number or null
   def replace_infinity(obj):
       if isinstance(obj, dict):
@@ -224,17 +225,17 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
     json.dump(configs, fp, indent=4)
 
   # Store the results in a file
-  results_path = os.path.join(new_folder_path, 'results.txt')
+  results_path = os.path.join(logdir, 'results.txt')
   with open(results_path, 'w') as f:
     for i in range(len(total_rewards)):
       f.write(f"step: {timesteps[i]}, reward: {total_rewards[i]}, reward_std: {total_rewards_std[i]}\n")
 
   # Save the rewards as JSON
-  rewards_path = os.path.join(new_folder_path, 'rewards.json')
+  rewards_path = os.path.join(logdir, 'rewards.json')
   with open(rewards_path, 'w') as fp:
       json.dump(rewards, fp, indent=4, cls=JaxArrayEncoder)
     
-  params_path = os.path.join(new_folder_path, 'params')
+  params_path = os.path.join(logdir, 'params')
   model.save_params(params_path, params)
 
   jit_reset = jax.jit(env.reset)
@@ -257,8 +258,8 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
       rollout.append(state)
 
   render_every = 1
-  frames = env.render(rollout[::render_every], camera='track')
-  video_path = os.path.join(new_folder_path, 'posttraining.mp4')
+  frames = env.render(rollout[::render_every], camera='track', width=1920, height=1080)
+  video_path = os.path.join(logdir, 'posttraining.mp4')
   fps = 1.0 / env.dt
   ctx = mp.get_context("spawn")
   p = ctx.Process(target=save_video, args=(frames, video_path, fps))
