@@ -50,6 +50,7 @@ Pipfile.lock     # if using Pipenv
 
 # Logs
 *.log
+logs/
 
 # DO NOT ignore these files (needed for environment recreation)
 !requirements.txt

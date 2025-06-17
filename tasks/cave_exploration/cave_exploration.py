@@ -670,14 +670,13 @@ class CaveExplore(mjx_env.MjxEnv):
   def _cost_feet_slip(
       self, data: mjx.Data, contact: jax.Array, info: dict[str, Any]
   ) -> jax.Array:
-    cmd_norm = jp.linalg.norm(info["command"])
     feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
     vel_xy = feet_vel[..., :2]
     vel_xy_norm_sq = jp.sum(jp.square(vel_xy), axis=-1)
-    return jp.sum(vel_xy_norm_sq * contact) * (cmd_norm > 0.01)
+    return jp.sum(vel_xy_norm_sq * contact)
 
 
-  # Perturbation and command sampling.
+  # Perturbation
 
   def _maybe_apply_perturbation(self, state: mjx_env.State) -> mjx_env.State:
     def gen_dir(rng: jax.Array) -> jax.Array:

@@ -56,8 +56,6 @@ import json
 # Importing the necessary libraries
 from datetime import datetime
 import functools
-
-import os
 # Run the code on the CPU rather than the GPU
 # Normally the code runs on the GPU or any other accelerator that is available
 #os.environ['JAX_PLATFORM_NAME'] = 'cpu'
@@ -192,7 +190,6 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   # Params: Stores the weights of the trained model
   # Metrics: Contains information about the training process such as performance over time
   from mujoco_playground import wrapper
-  import os
   # Run training
   make_inference_fn, params, metrics = train_fn(
       environment=env,
