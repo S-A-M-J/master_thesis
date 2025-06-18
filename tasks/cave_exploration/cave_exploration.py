@@ -291,6 +291,7 @@ class CaveExplore(mjx_env.MjxEnv):
         "pert_steps": 0,
         "pert_dir": jp.zeros(3),
         "pert_mag": pert_mag,
+        "last_pos": qpos[0:3],
     }
 
     metrics = {}
@@ -366,6 +367,7 @@ class CaveExplore(mjx_env.MjxEnv):
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
+    state.info["last_pos"] = data.qpos[0:3]
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
 
@@ -590,7 +592,7 @@ class CaveExplore(mjx_env.MjxEnv):
     del metrics  # Unused.
     return {
         "distance_to_target": self._reward_target_distance(
-            data.qpos[0:3], jp.array(info["target_pos"])
+            data.qpos[0:3], jp.array(info["target_pos"]), info["last_pos"]
         ),
         "exploration_rate": self._reward_exploration_rate(data.qpos[0:3]),
         "lin_vel_z": self._cost_lin_vel_z(self.get_global_linvel(data)),
@@ -651,9 +653,11 @@ class CaveExplore(mjx_env.MjxEnv):
     # Penalize early termination.
     return done
   
-  def _reward_target_distance(self, qpos: jax.Array, target_pos: jax.Array) -> jax.Array:
+  def _reward_target_distance(self, qpos: jax.Array, target_pos: jax.Array, last_pos: jax.Array) -> jax.Array:
     # Reward for distance to target.
-    return jp.linalg.norm(qpos - target_pos)
+    last_dist = jp.linalg.norm(last_pos - target_pos)
+    current_dist = jp.linalg.norm(qpos - target_pos)
+    return last_dist - current_dist
   
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
     # Reward for exploration rate.

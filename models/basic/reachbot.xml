@@ -138,6 +138,18 @@
   <keyframe>
     <!-- The qpos attribute specifies the joint positions for this keyframe. -->
     <key name="home" qpos="
+    0 0 0
+    0 0 0 0
+    0 0 0
+    0 0 0
+    0 0 0 
+    0 0 0"
+      ctrl="
+    0 0 0
+    0 0 0
+    0 0 0
+    0 0 0"/>
+    <key name="stand" qpos="
     1 0 3
     1 0 0 0
     0 0.7 0.3
