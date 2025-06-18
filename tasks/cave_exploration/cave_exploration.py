@@ -444,8 +444,8 @@ class CaveExplore(mjx_env.MjxEnv):
   def _get_termination(self, data: mjx.Data) -> jax.Array:
      qpos = data.qpos
      out_of_bounds = (qpos[2] < -1) | (qpos[2] > 5) # Check if x, y, or z position is out of bounds
-     has_fallen = self.get_upvector(data)[-1] < 0.0 # Check if the robot has fallen
-     return out_of_bounds | has_fallen # Return True if either condition is met
+     #has_fallen = self.get_upvector(data)[-1] < 0.0 # Check if the robot has fallen
+     return out_of_bounds #| has_fallen # Return True if either condition is met
 
 
   def _get_obs(
