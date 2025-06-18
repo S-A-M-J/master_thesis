@@ -307,12 +307,12 @@ if __name__ == '__main__':
   ppo_training_params = dict(ppo_params)
   
   # Modify params for faster training
-  ppo_training_params["num_timesteps"] = 1_000_000 # Reduce from 60000000
-  ppo_training_params["episode_length"] = 2000 # Reduce from 1000
-  ppo_training_params["num_envs"] = 2048 # Reduce from 2048
-  ppo_training_params["batch_size"] = 256 # Reduce from 1024
-  ppo_training_params["num_minibatches"] = 16 # Reduce from 32
+  ppo_training_params["num_timesteps"] = 10_000_000 # Reduce from 60000000
+  ppo_training_params["episode_length"] = 2000 # Number of parallel environments
+  ppo_training_params["num_envs"] = 4096 # Reduce from 2048
+  ppo_training_params["batch_size"] = 256 # Number of samples randomly chosen from the rollout data for training
+  ppo_training_params["num_minibatches"] = 16 # Splits batch_size into num_minibatches for separate gradient updates
   ppo_training_params["num_updates_per_batch"] = 8 # Reduce from 16
-  ppo_training_params["unroll_length"] = 50
+  ppo_training_params["unroll_length"] = 50 # Number of steps to run in each environment before gathering rollouts
   ppo_training_params["entropy_cost"] = 0.02
   trainModel(ppo_training_params)

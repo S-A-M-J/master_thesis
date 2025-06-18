@@ -235,7 +235,8 @@ class CaveExplore(mjx_env.MjxEnv):
   def reset(self, rng: jax.Array) -> mjx_env.State:
     """Resets the environment to a random state."""
     self._select_random_env()
-    qpos = jp.array(self._active_env["mj_model"].keyframe("home").qpos.copy())
+    qpos = jp.array(self._active_env["initial_qpos"].copy())
+    
     qvel = jp.zeros(self.mjx_model.nv)
 
     # Randomize the initial z axis orientation of the robot
@@ -442,7 +443,7 @@ class CaveExplore(mjx_env.MjxEnv):
   
   def _get_termination(self, data: mjx.Data) -> jax.Array:
      qpos = data.qpos
-     out_of_bounds = (qpos[0] < - 2) | (qpos[0] > 20) | (jp.abs(qpos[1]) > 5) | (qpos[2] < 0) | (qpos[2] > 5) # Check if x, y, or z position is out of bounds
+     out_of_bounds = (qpos[2] < -1) | (qpos[2] > 5) # Check if x, y, or z position is out of bounds
      has_fallen = self.get_upvector(data)[-1] < 0.0 # Check if the robot has fallen
      return out_of_bounds | has_fallen # Return True if either condition is met
 

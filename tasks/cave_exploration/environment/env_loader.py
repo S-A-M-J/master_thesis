@@ -2,6 +2,7 @@ import os
 import random
 import glob
 import json
+import mujoco  # Make sure mujoco is installed and configured correctly
 from mujoco import mjx, MjModel  # Make sure mujoco's mjx Python bindings are installed
 from models.model_loader import ReachbotModelType, ReachbotModel
 
@@ -47,7 +48,14 @@ class CaveBatchLoader:
             mj_model = MjModel.from_xml_path(
                 xml_file,
             )
-            mj_model.opt.timestep = config.sim_dt
+            # Load model and let robot settle to get initial state.
+            data = mujoco.MjData(mj_model)
+            steps = 3 / config.sim_dt  # Number of steps to let the robot settle
+            for _ in range(int(steps)):
+                mujoco.mj_step(mj_model, data)
+            inital_qpos = data.qpos.copy()
+            initial_qpos[3] = inital_qpos[3] + 0.01  # Keep the initial orientation
+            print (f"Initial qpos for {folder}: {inital_qpos}")
 
             # Modify PD gains.
             mj_model.dof_damping[6:] = config.Kd_rot
@@ -89,6 +97,7 @@ class CaveBatchLoader:
                 "json_data": json_data,
                 "target_pos": target_pos,
                 "voxel_positions": voxel_positions,
-                "folder": folder
+                "folder": folder,
+                "initial_qpos": inital_qpos
             })
 
