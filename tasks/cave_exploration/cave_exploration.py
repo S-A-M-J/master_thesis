@@ -235,6 +235,8 @@ class CaveExplore(mjx_env.MjxEnv):
   def reset(self, rng: jax.Array) -> mjx_env.State:
     """Resets the environment to a random state."""
     self._select_random_env()
+    np.set_printoptions(precision=3, suppress=True)
+    print("initial qpos (reset):", self._active_env["initial_qpos"])
     qpos = jp.array(self._active_env["initial_qpos"].copy())
     
     qvel = jp.zeros(self.mjx_model.nv)
@@ -249,10 +251,8 @@ class CaveExplore(mjx_env.MjxEnv):
 
     #  Randomize the initial joint velocities
     rng, key = jax.random.split(rng)
-    qvel = qvel.at[0:6].set(
-        jax.random.uniform(key, (6,), minval=-0.5, maxval=0.5)
-    )
-    ctrl = self._qpos_to_motor_ctrl(qpos)
+    qvel = jp.zeros(self.mjx_model.nv)
+    ctrl = jp.zeros(self.mjx_model.nu)
     data = mjx_env.init(self.mjx_model, qpos=qpos, qvel=qvel, ctrl=ctrl)
 
     rng, key1, key2, key3 = jax.random.split(rng, 4)
@@ -312,7 +312,7 @@ class CaveExplore(mjx_env.MjxEnv):
     if self._config.pert_config.enable:
       state = self._maybe_apply_perturbation(state)
     # state = self._reset_if_outside_bounds(state)
-    state_formatted = self._qpos_to_motor_ctrl(self._init_q)
+    state_formatted = self._qpos_to_motor_ctrl(state.data.qpos)
     # Split the action into motor control and stickiness control
     actuator_action = action[:self.mjx_model.nu]         # e.g., shape (8,)
     stickiness_action = action[self.mjx_model.nu:] 

@@ -158,7 +158,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
         writer.add_scalar(key, value, num_steps)
         writer.flush()
     metrics["timesteps"] = num_steps
-    metrics["time"] = datetime.now().timestamp()
+    metrics["time"] = (times[-1] - times[0]).total_seconds()
     rewards.append(metrics)
     percent_complete = (num_steps / ppo_training_params["num_timesteps"]) * 100
     print(f"step: {num_steps}/{ppo_training_params['num_timesteps']} ({percent_complete:.1f}%), reward: {total_rewards[-1]:.3f} +/- {total_rewards_std[-1]:.3f}")
@@ -206,8 +206,14 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
       environment=env,
       wrap_env_fn=wrapper.wrap_for_brax_training,
   )
-  print(f"time to jit: {times[1] - times[0]}")
-  print(f"time to train: {times[-1] - times[1]}")
+
+  if ppo_params_input["num_timesteps"] == 0:
+    print("Skipping training, using pre-trained model.")
+    # Load the pre-trained model
+    params = model.load_params(os.path.join(logdir, 'params'))
+  else:
+    print(f"time to jit: {times[1] - times[0]}")
+    print(f"time to train: {times[-1] - times[1]}")
 
   # Save configs as json in results
   configs = {
@@ -307,10 +313,10 @@ if __name__ == '__main__':
   ppo_training_params = dict(ppo_params)
   
   # Modify params for faster training
-  ppo_training_params["num_timesteps"] = 10_000_000 # Reduce from 60000000
+  ppo_training_params["num_timesteps"] = 0 # Reduce from 60000000
   ppo_training_params["episode_length"] = 2000 # Number of parallel environments
-  ppo_training_params["num_envs"] = 4096 # Reduce from 2048
-  ppo_training_params["batch_size"] = 256 # Number of samples randomly chosen from the rollout data for training
+  ppo_training_params["num_envs"] = 2048 # Reduce from 2048
+  ppo_training_params["batch_size"] = 512 # Number of samples randomly chosen from the rollout data for training
   ppo_training_params["num_minibatches"] = 16 # Splits batch_size into num_minibatches for separate gradient updates
   ppo_training_params["num_updates_per_batch"] = 8 # Reduce from 16
   ppo_training_params["unroll_length"] = 50 # Number of steps to run in each environment before gathering rollouts

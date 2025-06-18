@@ -5,6 +5,7 @@ import json
 import mujoco  # Make sure mujoco is installed and configured correctly
 from mujoco import mjx, MjModel  # Make sure mujoco's mjx Python bindings are installed
 from models.model_loader import ReachbotModelType, ReachbotModel
+import numpy as np
 
 CAVES_DIR = os.path.join(os.path.dirname(__file__), "caves")
 
@@ -50,7 +51,7 @@ class CaveBatchLoader:
             )
             # Load model and let robot settle to get initial state.
             data = mujoco.MjData(mj_model)
-            steps = 2 / config.sim_dt  # Number of steps to let the robot settle
+            steps = 5 / config.sim_dt  # Number of steps to let the robot settle
             for _ in range(int(steps)):
                 mujoco.mj_step(mj_model, data)
             initial_qpos = data.qpos.copy()
@@ -89,6 +90,8 @@ class CaveBatchLoader:
                 target_pos = [tp.get("x", 0.0), tp.get("y", 0.0), tp.get("z", 0.0)]
             if "voxel_positions" in json_data:
                 voxel_positions = json_data["voxel_positions"]
+            np.set_printoptions(precision=3, suppress=True)
+            print("initial_qpos (cave_batch_loader):", initial_qpos)
             self.envs.append({
                 "cave_id": json_data.get("cave_id"),
                 "mj_model": mj_model,
