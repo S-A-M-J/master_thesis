@@ -238,11 +238,13 @@ class CaveExplore(mjx_env.MjxEnv):
     qpos = jp.array(self._active_env["mj_model"].keyframe("home").qpos.copy())
     qvel = jp.zeros(self.mjx_model.nv)
 
-    # Randomize the initial position and orientation of the robot
+    # Randomize the initial z axis orientation of the robot
     rng, key = jax.random.split(rng)
     yaw = jax.random.uniform(key, (1,), minval=-3.14, maxval=3.14)
     quat = math.axis_angle_to_quat(jp.array([0, 0, 1]), yaw)
     new_quat = math.quat_mul(qpos[3:7], quat)
+
+    qpos = qpos.at[3:7].set(new_quat)  # Set the new orientation
 
     #  Randomize the initial joint velocities
     rng, key = jax.random.split(rng)
@@ -440,9 +442,9 @@ class CaveExplore(mjx_env.MjxEnv):
   
   def _get_termination(self, data: mjx.Data) -> jax.Array:
      qpos = data.qpos
-     out_of_bounds = jp.logical_or(jp.logical_or(jp.abs(qpos[0]) > 9.5, jp.abs(qpos[1]) > 9.5), jp.abs(qpos[2]) > 0.5) # Check if x, y, or z position is out of bounds
+     out_of_bounds = (qpos[0] < - 2) | (qpos[0] > 20) | (jp.abs(qpos[1]) > 5) | (qpos[2] < 0) | (qpos[2] > 5) # Check if x, y, or z position is out of bounds
      has_fallen = self.get_upvector(data)[-1] < 0.0 # Check if the robot has fallen
-     return jp.logical_or(out_of_bounds, has_fallen) # Return True if either condition is met
+     return out_of_bounds | has_fallen # Return True if either condition is met
 
 
   def _get_obs(
@@ -657,7 +659,7 @@ class CaveExplore(mjx_env.MjxEnv):
     # Reward for distance to target.
     last_dist = jp.linalg.norm(last_pos - target_pos)
     current_dist = jp.linalg.norm(qpos - target_pos)
-    return last_dist - current_dist
+    return (last_dist - current_dist) * self._config.reward_config.scales.distance_to_target
   
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
     # Reward for exploration rate.

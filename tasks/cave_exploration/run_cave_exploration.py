@@ -74,6 +74,8 @@ from mujoco_playground import registry
 
 from tensorboardX import SummaryWriter
 
+from pathlib import Path
+
 
 
 ENV_STR = 'Go1JoystickFlatTerrain'
@@ -104,6 +106,18 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
   from tasks.cave_exploration.cave_exploration import default_config as reachbot_config
   env_cfg = reachbot_config()
+  
+  env_cfg.reward_config.scales.orientation = 0.0 # Disable orientation reward
+  env_cfg.reward_config.scales.lin_vel_z = 0.0 # Disable velocity reward
+  env_cfg.reward_config.scales.ang_vel_xy = 0.0 # Disable xy velocity reward
+  env_cfg.reward_config.scales.feet_slip = 0.0 # Disable z velocity reward
+  env_cfg.reward_config.scales.boom_extension_speed = 0.0 # Disable feet height reward
+  env_cfg.reward_config.scales.stand_still = 0.0 # Disable feet height reward
+  env_cfg.reward_config.scales.torques = 0.0 # Disable LIDAR reward
+  env_cfg.reward_config.scales.action_rate = 0.0 # Disable LIDAR reward
+  env_cfg.reward_config.scales.energy = 0.0 # Enable
+  env_cfg.reward_config.scales.distance_to_target = 2.0 # Disable LIDAR reward
+
   env = CaveExplore(config=env_cfg, lidar_num_horizontal_rays=20, lidar_max_range=15.0, lidar_horizontal_angle_range=jp.pi * 2, lidar_vertical_angle_range=jp.pi / 6) # Updated LIDAR params for 3D
 
   ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
@@ -136,21 +150,18 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
   # Function to display the training progress
   def progress(num_steps, metrics):
-
     times.append(datetime.now())
-    x_data.append(num_steps)
-    y_data.append(metrics["eval/episode_reward"])
-    y_dataerr.append(metrics["eval/episode_reward_std"])
     timesteps.append(num_steps)
-    metrics["timesteps"] = num_steps
-    rewards.append(metrics)
     total_rewards.append(metrics["eval/episode_reward"])
     total_rewards_std.append(metrics["eval/episode_reward_std"])
     for key, value in metrics.items():
         writer.add_scalar(key, value, num_steps)
         writer.flush()
+    metrics["timesteps"] = num_steps
+    metrics["time"] = datetime.now().timestamp()
+    rewards.append(metrics)
     percent_complete = (num_steps / ppo_training_params["num_timesteps"]) * 100
-    print(f"step: {num_steps}/{ppo_training_params['num_timesteps']} ({percent_complete:.1f}%), reward: {y_data[-1]:.3f} +/- {y_dataerr[-1]:.3f}")
+    print(f"step: {num_steps}/{ppo_training_params['num_timesteps']} ({percent_complete:.1f}%), reward: {total_rewards[-1]:.3f} +/- {total_rewards_std[-1]:.3f}")
 
   
   # Getting the network factory
@@ -226,11 +237,36 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   with open(results_path, 'w') as f:
     for i in range(len(total_rewards)):
       f.write(f"step: {timesteps[i]}, reward: {total_rewards[i]}, reward_std: {total_rewards_std[i]}\n")
+    f.write(f"Time to jit: {times[1] - times[0]}\n")
+    f.write(f"Time to train: {times[-1] - times[1]}\n")
 
   # Save the rewards as JSON
   rewards_path = os.path.join(logdir, 'rewards.json')
+  def nest_flat_dict(flat_dict):
+    """Converts a dictionary with '/' in keys to a nested dictionary."""
+    nested_dict = {}
+    for key, value in flat_dict.items():
+        parts = key.split('/')
+        d = nested_dict
+        for i, part in enumerate(parts):
+            is_last_part = (i == len(parts) - 1)
+            if is_last_part:
+                # If a dictionary already exists here, we're setting the 'value' for that group.
+                if isinstance(d.get(part), dict):
+                    d[part]['value'] = value
+                else:
+                    d[part] = value
+            else:
+                # If the path item is not a dict, convert it to one to allow nesting.
+                if not isinstance(d.get(part), dict):
+                    d[part] = {'value': d[part]} if part in d else {}
+                d = d[part]
+    return nested_dict
+  
+  nested_rewards = [nest_flat_dict(r) for r in rewards]
   with open(rewards_path, 'w') as fp:
-      json.dump(rewards, fp, indent=4, cls=JaxArrayEncoder)
+      json.dump(nested_rewards, fp, indent=4, cls=JaxArrayEncoder)
+
     
   params_path = os.path.join(logdir, 'params')
   model.save_params(params_path, params)
@@ -255,7 +291,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
       rollout.append(state)
 
   render_every = 1
-  frames = env.render(rollout[::render_every], camera='track', width=1920, height=1080)
+  frames = env.render(rollout[::render_every], camera='track_global', width=1920, height=1080)
   video_path = os.path.join(logdir, 'posttraining.mp4')
   fps = 1.0 / env.dt
   ctx = mp.get_context("spawn")
@@ -271,7 +307,7 @@ if __name__ == '__main__':
   ppo_training_params = dict(ppo_params)
   
   # Modify params for faster training
-  ppo_training_params["num_timesteps"] = 10_000_000 # Reduce from 60000000
+  ppo_training_params["num_timesteps"] = 1_000_000 # Reduce from 60000000
   ppo_training_params["episode_length"] = 2000 # Reduce from 1000
   ppo_training_params["num_envs"] = 2048 # Reduce from 2048
   ppo_training_params["batch_size"] = 256 # Reduce from 1024
