@@ -1,0 +1,34 @@
+{
+    "generation": {
+        "cave_id": 2,
+        "length": 20.0,
+        "radius": 2.0,
+        "num_segments": 10,
+        "points_per_circle": 12,
+        "offset_magnitude": 2,
+        "num_dents": 3,
+        "curve_intensity": 0.4007013369456735
+    },
+    "original_mesh": {
+        "vertex_count": 120,
+        "face_count": 216,
+        "is_watertight": false
+    },
+    "voxelization": {
+        "voxel_size": 0.1,
+        "voxel_count": 32448
+    },
+    "target_pos": {
+        "x": 20.0,
+        "y": 2.2,
+        "z": 2.0
+    },
+    "voxel_mesh": {
+        "vertex_count": 67408,
+        "face_count": 389376
+    },
+    "mujoco_boxes": {
+        "original_box_count": 32448,
+        "merged_box_count": 3587
+    }
+}
