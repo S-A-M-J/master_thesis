@@ -138,7 +138,7 @@
   <keyframe>
     <!-- The qpos attribute specifies the joint positions for this keyframe. -->
     <key name="home" qpos="
-    0 0 0
+    0 0 0.5
     0 0 0 0
     0 0 0
     0 0 0

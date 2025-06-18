@@ -50,12 +50,11 @@ class CaveBatchLoader:
             )
             # Load model and let robot settle to get initial state.
             data = mujoco.MjData(mj_model)
-            steps = 3 / config.sim_dt  # Number of steps to let the robot settle
+            steps = 2 / config.sim_dt  # Number of steps to let the robot settle
             for _ in range(int(steps)):
                 mujoco.mj_step(mj_model, data)
             initial_qpos = data.qpos.copy()
             initial_qpos[3] = initial_qpos[3] + 0.01  # Keep the initial orientation
-            print (f"Initial qpos for {folder}: {initial_qpos}")
 
             # Modify PD gains.
             mj_model.dof_damping[6:] = config.Kd_rot

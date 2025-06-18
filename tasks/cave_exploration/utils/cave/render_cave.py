@@ -3,6 +3,7 @@ import sys
 import mujoco
 import mujoco.viewer
 import argparse
+import numpy as np
 
 # Add the project root and cave exploration directory to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -49,10 +50,13 @@ def render_mesh( scale=1.0):
 def main():
     print("MuJoCo Mesh Viewer")
     config = reachbot_config()  # Call the function to get the config object
-    envs = CaveBatchLoader(1, config)
-    model = envs.envs[0]["mj_model"]
+    envs = CaveBatchLoader(3, config)
+    rng = np.random.randint(3)  # Initialize random number generator
+    model = envs.envs[rng]["mj_model"]
+    initial_qpos = envs.envs[rng]["initial_qpos"]
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, 0)
+    data.qpos[:] = initial_qpos  # Set the initial position
     with mujoco.viewer.launch(model, data) as viewer:
         # Initial camera setup
         viewer.cam.lookat[:] = [0, 0, 0]  # Looking at the center
