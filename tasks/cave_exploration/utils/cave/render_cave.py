@@ -52,6 +52,7 @@ def main():
     config = reachbot_config()  # Call the function to get the config object
     envs = CaveBatchLoader(3, config)
     rng = np.random.randint(3)  # Initialize random number generator
+    print(f"Rendering environment {envs.envs[rng]['folder']}")
     model = envs.envs[rng]["mj_model"]
     initial_qpos = envs.envs[rng]["initial_qpos"]
     data = mujoco.MjData(model)

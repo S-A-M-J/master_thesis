@@ -29,7 +29,7 @@ def generate_cave_tunnel(curve_intensity=0.5):
     num_dents = 3  # Number of dents to add
     
     # Randomly choose segments for dents (excluding first and last)
-    available_segments = list(range(1, num_segments - 1))  # All segments except first and last
+    available_segments = list(range(3, num_segments - 1))  # All segments except first 3 and last
     dented_segments = np.random.choice(
         available_segments, 
         size=min(num_dents, len(available_segments)), 
@@ -58,6 +58,8 @@ def generate_cave_tunnel(curve_intensity=0.5):
     
     # Reset first position to avoid drift at the start
     centerline[0] = [0, 0, 0]
+    print(f"DEBUG: centerline[0] = {centerline[0]}")
+    print(f"DEBUG: centerline[-1] = {centerline[-1]}")
     
     # Generate vertices around centerline
     vertices = []
@@ -253,7 +255,9 @@ def save_mujoco_boxes(voxels, voxel_size, filename):
     # Merge adjacent voxels
     merged_boxes = merge_adjacent_voxels(voxels, voxel_size)
     print(f"Reduced from {len(voxels)} individual voxels to {len(merged_boxes)} merged boxes")
-    
+    if merged_boxes:
+        print(f"DEBUG: First merged box position: {merged_boxes[0][0]}")
+        print(f"DEBUG: Last merged box position: {merged_boxes[-1][0]}")
     with open(filename, 'w') as f:
         f.write('<body name="cave_voxelized" pos="0 0 0">\n')
         
@@ -341,12 +345,31 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5):
     
     # Calculate target position based on voxel data
     if len(voxels) > 0:
+
+        start_mix_x = np.min(voxels[:, 0])
+        start_voxels = voxels[voxels[:, 0] == start_mix_x]
+        start_min_y = np.min(start_voxels[:, 1])
+        start_max_y = np.max(start_voxels[:, 1])
+        start_mid_y = (start_max_y + start_min_y) / 2
+        start_min_z = np.min(start_voxels[:, 2])
+        start_z = start_min_z + 0.2  # 0.2m
+        # Add 5 voxel segments before the start position to flat start ground
+        for i in range(5):
+            for j in range(len(start_voxels)):
+                voxels = np.vstack((voxels, start_voxels[j] + np.array([-i - 1, 0, 0])))
+
+        # Shift all voxels to have 0 position at middle of min_x
+        voxels[:, 1] -= int(round(start_mid_y))
+        voxels[:, 2] -= int(round(start_z))
+
         # Convert voxel indices to world coordinates
         world_voxels = voxels * voxel_size
         
+
         # Find the voxel with maximum x value
         max_x = np.max(world_voxels[:, 0])
         max_x_voxels = world_voxels[world_voxels[:, 0] == max_x]
+        print(max_x_voxels)
         
         # Find y range of voxels at max x position
         max_y = np.max(max_x_voxels[:, 1])
@@ -366,6 +389,7 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5):
         
         print(f"Cave {cave_id} - Target position: x={max_x:.2f}, y={mid_y:.2f}, z={target_z:.2f}")
     else:
+        exit("NO VOXELS FOUND")  # Exit if no voxels are found
         print(f"Cave {cave_id} - Could not calculate target position (no voxels)")
         cave_params["target_pos"] = {
             "x": length,  # Default to end of tunnel
