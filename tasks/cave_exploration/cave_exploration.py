@@ -39,18 +39,32 @@ from models.model_loader import ReachbotModelType
 from environment.env_loader import CaveBatchLoader
 import random
 
+def renormalize_quat(qpos):
+    """Renormalize the free-joint quaternion to prevent numerical drift.
+    
+    Args:
+        qpos: Position array where indices 3:7 contain the free-joint quaternion
+        
+    Returns:
+        qpos with renormalized quaternion at indices 3:7
+    """
+    # assumes indices 3:7 are the free‑joint quaternion
+    quat = qpos[3:7]
+    quat = quat / jp.linalg.norm(quat)
+    return qpos.at[3:7].set(quat)
+
 def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
       cave_batch_size=1,  # Number of caves to load in a batch
       ctrl_dt=0.02,
-      sim_dt=0.004,
+      sim_dt=0.002,
       episode_length=1000,
       Kp_rot=35.0,
-      Kd_rot=1,
-      Kp_pri=200.0,
+      Kd_rot=2,
+      Kp_pri=100.0,
       Kd_pri=20.0,
       action_repeat=1,
-      action_scale=0.5,
+      action_scale=0.2,
       history_len=1,
       soft_joint_pos_limit_factor=0.95,
       noise_config=config_dict.create(
@@ -68,7 +82,8 @@ def default_config() -> config_dict.ConfigDict:
             
             # Base movement rewards
             orientation=-0.2,           # Penalty scale for orientation deviation (based on upwards vector sensor). Default is -5.0
-            distance_to_target=1.0,     # Reward scale for distance to target
+            distance_to_target=10.0,     # Reward scale for distance to target
+            vel_to_target=100.0,          # Reward scale for velocity towards target. Default is 0.0
             exploration_rate=1.0,       # Reward scale for exploration rate
             lin_vel_z=-0.1,            # Penalty scale for linear velocity in z-direction
             ang_vel_xy=-0.1,           # Penalty scale for angular velocity in xy-plane
@@ -77,11 +92,9 @@ def default_config() -> config_dict.ConfigDict:
             dof_pos_limits=-1.0,        # Penalty scale for degree of freedom position limits. Default is -1.0
             pose=0.0,                   # Reward scale for maintaining a specific pose. Default is 0.5
             feet_slip=-0.01,           # Penalty scale for feet slipping
-            boom_extension_speed=-0.01, # Penalty scale for boom extension speed
             
             # Termination and stand-still penalties
             termination=-1.0,           # Penalty scale for termination conditions. Default is -1.0
-            stand_still=-1.0,           # Penalty scale for standing still. Default is -1.0
             
             # Regularization terms
             torques=-0.0002,            # Penalty scale for torques applied. Default is -0.0002
@@ -235,8 +248,6 @@ class CaveExplore(mjx_env.MjxEnv):
   def reset(self, rng: jax.Array) -> mjx_env.State:
     """Resets the environment to a random state."""
     self._select_random_env()
-    np.set_printoptions(precision=3, suppress=True)
-    print("initial qpos (reset):", self._active_env["initial_qpos"])
     qpos = jp.array(self._active_env["initial_qpos"].copy())
     
     qvel = jp.zeros(self.mjx_model.nv)
@@ -279,9 +290,11 @@ class CaveExplore(mjx_env.MjxEnv):
     )
 
     rng, key1, key2 = jax.random.split(rng, 3)
-  
+  # Compute and store initial distance to target in info dict (JAX-safe)
+    init_dist_to_target = jp.linalg.norm(qpos[0:3] - jp.array(self._active_env["target_pos"]))
 
     info = {
+        "init_dist_to_target": init_dist_to_target,
         "rng": rng,
         "target_pos": self._active_env["target_pos"],
         "last_act": jp.zeros(self.mjx_model.nu),
@@ -304,6 +317,7 @@ class CaveExplore(mjx_env.MjxEnv):
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
+    
     return mjx_env.State(data, obs, reward, done, metrics, info)
 
 
@@ -352,6 +366,11 @@ class CaveExplore(mjx_env.MjxEnv):
     data = mjx_env.step(
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )
+    
+    #jax.debug.print("step qpos: {qpos}",qpos=data.qpos)
+    
+    # Renormalize quaternion to prevent numerical drift
+    data = data.replace(qpos=renormalize_quat(data.qpos))
 
     contact_filt = contact | state.info["last_contact"]
     p_f = data.site_xpos[self._feet_site_id]
@@ -504,7 +523,7 @@ class CaveExplore(mjx_env.MjxEnv):
         noisy_linvel,  # 3
         noisy_gyro,  # 3
         noisy_gravity,  # 3
-        noisy_joint_angles - self._default_pose,  # 12
+        noisy_joint_angles,  # 12
         noisy_joint_vel,  # 12
         info["last_act"],  # 12
         lidar_ranges,  # LIDAR
@@ -565,7 +584,8 @@ class CaveExplore(mjx_env.MjxEnv):
             world_ray_dir = rot_mat @ local_ray_dir
             
             norm = jp.linalg.norm(world_ray_dir)
-            world_ray_dir = world_ray_dir / (norm + 1e-6)
+            jp.where(norm == 0, 1e-6, norm)  # Avoid division by zero
+            world_ray_dir = world_ray_dir / norm
 
             # Cast ray - use geomgroup to filter collision detection
             # Create collision mask: only collide with cave walls (contype=2)
@@ -584,34 +604,36 @@ class CaveExplore(mjx_env.MjxEnv):
     return ranges
 
   def _get_reward(
-      self,
-      data: mjx.Data,
-      action: jax.Array,
-      info: dict[str, Any],
-      metrics: dict[str, Any],
-      done: jax.Array,
-      contact: jax.Array,
-  ) -> dict[str, jax.Array]:
-    del metrics  # Unused.
-    return {
-        "distance_to_target": self._reward_target_distance(
-            data.qpos[0:3], jp.array(info["target_pos"]), info["last_pos"]
-        ),
-        "exploration_rate": self._reward_exploration_rate(data.qpos[0:3]),
-        "lin_vel_z": self._cost_lin_vel_z(self.get_global_linvel(data)),
-        "ang_vel_xy": self._cost_ang_vel_xy(self.get_global_angvel(data)),
-        "orientation": self._cost_orientation(self.get_upvector(data)),
-        "stand_still": self._cost_stand_still(data.qvel[6:]),
-        "termination": self._cost_termination(done),
-        "torques": self._cost_torques(data.actuator_force),
-        "action_rate": self._cost_action_rate(
-            action, info["last_act"], info["last_last_act"]
-        ),
-        "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
-        "feet_slip": self._cost_feet_slip(data, contact, info),
-        "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
-        "boom_extension_speed": self._cost_boom_extension_speed(data.qvel[6:]),
-    }
+        self,
+        data: mjx.Data,
+        action: jax.Array,
+        info: dict[str, Any],
+        metrics: dict[str, Any],
+        done: jax.Array,
+        contact: jax.Array,
+    ) -> dict[str, jax.Array]:
+        del metrics  # Unused.
+        #jax.debug.print("CaveExplore step: {qpos}", qpos=data.qpos)
+        return {
+            "distance_to_target": self._reward_dist_to_target(
+                data.qpos[0:3], info
+            ),
+            "vel_to_target": self._reward_vel_to_target(
+                data.qpos[0:3], jp.array(info["target_pos"]), info["last_pos"]
+            ),
+            "exploration_rate": self._reward_exploration_rate(data.qpos[0:3]),
+            "lin_vel_z": self._cost_lin_vel_z(self.get_global_linvel(data)),
+            "ang_vel_xy": self._cost_ang_vel_xy(self.get_global_angvel(data)),
+            "orientation": self._cost_orientation(self.get_upvector(data)),
+            "termination": self._cost_termination(done),
+            "torques": self._cost_torques(data.actuator_force),
+            "action_rate": self._cost_action_rate(
+                action, info["last_act"], info["last_last_act"]
+            ),
+            "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
+            "feet_slip": self._cost_feet_slip(data, contact, info),
+            "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
+        }
 
   # Base-related rewards.
 
@@ -645,27 +667,29 @@ class CaveExplore(mjx_env.MjxEnv):
     del last_last_act  # Unused.
     return jp.sum(jp.square(act - last_act))
 
-  def _cost_stand_still(
-      self,
-      qvel: jax.Array,
-  ) -> jax.Array:
-    
-    return jp.sum(jp.square(qvel))
-
   def _cost_termination(self, done: jax.Array) -> jax.Array:
     # Penalize early termination.
     return done
   
-  def _reward_target_distance(self, qpos: jax.Array, target_pos: jax.Array, last_pos: jax.Array) -> jax.Array:
+  def _reward_vel_to_target(self, qpos: jax.Array, target_pos: jax.Array, last_pos: jax.Array) -> jax.Array:
     # Reward for distance to target.
     last_dist = jp.linalg.norm(last_pos - target_pos)
     current_dist = jp.linalg.norm(qpos - target_pos)
-    return (last_dist - current_dist) * self._config.reward_config.scales.distance_to_target
+    distance_diff = last_dist - current_dist
+    return jp.exp(distance_diff) - 1.0  # Exponential reward for change to target distance
+  
+  def _reward_dist_to_target(self, qpos: jax.Array, info: dict[str, Any]) -> jax.Array:
+        # Reward for distance to target.
+        target_pos = jp.array(self._active_env["target_pos"])
+        dist = jp.linalg.norm(qpos - target_pos)
+        init_dist = info["init_dist_to_target"]
+        dist_diff = jp.clip(init_dist - dist, 0.0, None)  # Ensure non-negative distance difference
+        return dist_diff / init_dist
   
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
     # Reward for exploration rate.
     return 0 # Placeholder for exploration rate reward, can be modified later.
-    return jp.linalg.norm(qpos - self._target_pos) / (self._cave_width * self._cave_height * self._cave_length)
+    #return jp.linalg.norm(qpos - self._target_pos) / (self._cave_width * self._cave_height * self._cave_length)
 
   def _cost_joint_pos_limits(self, qpos: jax.Array) -> jax.Array:
     # Penalize joints if they cross soft limits.
@@ -741,15 +765,6 @@ class CaveExplore(mjx_env.MjxEnv):
         wait,
         state,
     )
-  
-  
-  def _cost_boom_extension_speed(self, qvel: jax.Array) -> jax.Array:
-    """Returns a penalty value if the boom extension speed is too high."""
-    # Penalize the boom extension speed.
-    boom_indices = jp.array([9, 12, 15, 18])
-    boom_extension_speed = jp.sum(jp.abs(qvel[boom_indices]))
-    return boom_extension_speed
-
   
     
   # Accessors.

@@ -1,16 +1,15 @@
 # @title Run RL simulation with joystick control
 
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 import multiprocessing as mp
-import argparse
 try:
     mp.set_start_method('spawn', force=True)
 except RuntimeError:
     pass
-
-import os
-
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 
 # Tell XLA to use Triton GEMM, this    pip install numpy<2.0 improves steps/sec by ~30% on some GPUs
@@ -24,8 +23,9 @@ from jax import numpy as jp
 
 
 # This helps with nan values being returned from the model while costing some perf. See github @brax for more info
-# Other fix: jax.config.update('jax_enable_x64', True). However, this will slow down the training a lot
-#jax.config.update('jax_default_matmul_precision', 'high')
+# Other fix: 
+#jax.config.update('jax_enable_x64', True) # However, this will slow down the training a lot
+jax.config.update('jax_default_matmul_precision', 'high')
 jax.config.update("jax_debug_nans", True)
 # Check if GPU is available
 
@@ -76,6 +76,8 @@ from tensorboardX import SummaryWriter
 
 from pathlib import Path
 
+from utils.telegram_messenger import send_message_sync
+
 
 
 ENV_STR = 'Go1JoystickFlatTerrain'
@@ -107,16 +109,27 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   from tasks.cave_exploration.cave_exploration import default_config as reachbot_config
   env_cfg = reachbot_config()
   
-  env_cfg.reward_config.scales.orientation = 0.0 # Disable orientation reward
-  env_cfg.reward_config.scales.lin_vel_z = 0.0 # Disable velocity reward
-  env_cfg.reward_config.scales.ang_vel_xy = 0.0 # Disable xy velocity reward
-  env_cfg.reward_config.scales.feet_slip = 0.0 # Disable z velocity reward
-  env_cfg.reward_config.scales.boom_extension_speed = 0.0 # Disable feet height reward
-  env_cfg.reward_config.scales.stand_still = 0.0 # Disable feet height reward
-  env_cfg.reward_config.scales.torques = 0.0 # Disable LIDAR reward
-  env_cfg.reward_config.scales.action_rate = 0.0 # Disable LIDAR reward
-  env_cfg.reward_config.scales.energy = 0.0 # Enable
-  env_cfg.reward_config.scales.distance_to_target = 2.0 # Disable LIDAR reward
+  env_cfg.sim_dt = 0.004
+  env_cfg.action_scale = 0.2 # Scale the actions to make them more manageable
+  env_cfg.Kp_pri=100.0
+  
+  # --- Suggested Reward Scale Changes ---
+  # Enable core locomotion penalties to encourage stable movement
+  env_cfg.reward_config.scales.orientation = -0.0      # Penalize not being upright
+  env_cfg.reward_config.scales.lin_vel_z = -0.0        # Penalize vertical velocity
+  env_cfg.reward_config.scales.ang_vel_xy = -0.00      # Penalize spinning
+  env_cfg.reward_config.scales.torques = -0.0000       # Encourage energy efficiency
+  env_cfg.reward_config.scales.action_rate = -0.0       # Encourage smooth actions
+  env_cfg.reward_config.scales.dof_pos_limits = -0.0     # Penalize hitting joint limits
+
+  # Reduce the dominance of the target-based reward
+  env_cfg.reward_config.scales.distance_to_target = 10.0 # Reduced from 100.0
+
+  # Disable rewards that are not helping yet or are unimplemented
+  env_cfg.reward_config.scales.vel_to_target = 100.0       # Disable velocity to target for now
+  env_cfg.reward_config.scales.exploration_rate = 0.0    # Disable unimplemented exploration reward
+  
+  # --- End of Suggested Changes ---
 
   env = CaveExplore(config=env_cfg, lidar_num_horizontal_rays=20, lidar_max_range=15.0, lidar_horizontal_angle_range=jp.pi * 2, lidar_vertical_angle_range=jp.pi / 6) # Updated LIDAR params for 3D
 
@@ -190,7 +203,9 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   # Training the model
   print("Training the model...")
   train_fn = functools.partial(
-      ppo.train, **dict(ppo_training_params),
+      ppo.train, 
+      #log_training_metrics=True, 
+      **dict(ppo_training_params),
       network_factory=network_factory,
       progress_fn=progress,
       policy_params_fn=policy_params_fn,
@@ -202,10 +217,22 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   # Metrics: Contains information about the training process such as performance over time
   from mujoco_playground import wrapper
   # Run training
-  make_inference_fn, params, metrics = train_fn(
-      environment=env,
-      wrap_env_fn=wrapper.wrap_for_brax_training,
-  )
+  try:
+      make_inference_fn, params, metrics = train_fn(
+          environment=env,
+          wrap_env_fn=wrapper.wrap_for_brax_training,
+      )
+
+  except Exception as e:
+    import traceback
+    run_duration = str(datetime.now() - times[0])
+    send_message_sync(
+        task="Cave Exploration RL Training",
+        duration=run_duration,
+        result=f"Failed: {e}"
+    )
+    traceback.print_exc()
+    raise
 
   if ppo_params_input["num_timesteps"] == 0:
     print("Skipping training, using pre-trained model.")
@@ -234,9 +261,11 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   # Update the configs before saving
   configs = replace_infinity(configs)
 
- # Save environment configuration
+  # Save environment configuration
   with open(config_path, "w", encoding="utf-8") as fp:
     json.dump(configs, fp, indent=4)
+  print(f"Configuration saved to {config_path}")
+  writer.add_text('config', json.dumps(configs, indent=4))
 
   # Store the results in a file
   results_path = os.path.join(logdir, 'results.txt')
@@ -273,7 +302,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   with open(rewards_path, 'w') as fp:
       json.dump(nested_rewards, fp, indent=4, cls=JaxArrayEncoder)
 
-    
+  
   params_path = os.path.join(logdir, 'params')
   model.save_params(params_path, params)
 
@@ -305,6 +334,19 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   p.start()
   p.join()
 
+  # Calculate run duration
+  run_duration = str(times[-1] - times[0])
+  # Get final reward and std if available
+  if total_rewards:
+      result = f"Final reward: {total_rewards[-1]:.3f} ± {total_rewards_std[-1]:.3f}"
+  else:
+      result = "No rewards recorded."
+  send_message_sync(
+      task="Cave Exploration RL Training",
+      duration=run_duration,
+      result=result
+  )
+
 
 
 # Main function
@@ -313,12 +355,15 @@ if __name__ == '__main__':
   ppo_training_params = dict(ppo_params)
   
   # Modify params for faster training
-  ppo_training_params["num_timesteps"] = 0 # Reduce from 60000000
-  ppo_training_params["episode_length"] = 2000 # Number of parallel environments
-  ppo_training_params["num_envs"] = 2048 # Reduce from 2048
+  ppo_training_params["num_timesteps"] = 10_000_000 # Reduce from 60000000
+  ppo_training_params["episode_length"] = 2000 # Max episode length
+  ppo_training_params["num_envs"] = 4096 # Reduce from 2048
   ppo_training_params["batch_size"] = 512 # Number of samples randomly chosen from the rollout data for training
   ppo_training_params["num_minibatches"] = 16 # Splits batch_size into num_minibatches for separate gradient updates
   ppo_training_params["num_updates_per_batch"] = 8 # Reduce from 16
-  ppo_training_params["unroll_length"] = 50 # Number of steps to run in each environment before gathering rollouts
+  ppo_training_params["unroll_length"] = 100 # Number of steps to run in each environment before gathering rollouts
   ppo_training_params["entropy_cost"] = 0.02
+  ppo_training_params["learning_rate"] = 0.0003 # Learning rate for the optimizerppo
+  ppo_training_params["network_factory"]["policy_hidden_layer_sizes"] = [1024, 512, 256, 128] # Hidden layer sizes for the policy network
+  ppo_training_params["network_factory"]["value_hidden_layer_sizes"] = [1024, 512, 256, 128] # Hidden layer sizes for the policy network
   trainModel(ppo_training_params)
