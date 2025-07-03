@@ -27,7 +27,7 @@ from jax import numpy as jp
 # Other fix: 
 #jax.config.update('jax_enable_x64', True) # However, this will slow down the training a lot
 jax.config.update('jax_default_matmul_precision', 'high')
-jax.config.update("jax_debug_nans", True)
+#jax.config.update("jax_debug_nans", True)
 jax.config.update('jax_traceback_filtering', 'off') # Enable traceback filtering to get better error messages
 #jax.config.update('jax_disable_jit', True)
 # Check if GPU is available
@@ -112,8 +112,8 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   from tasks.cave_exploration.cave_exploration import default_config as reachbot_config
   env_cfg = reachbot_config()
   
-  env_cfg.sim_dt = 0.002
-  env_cfg.action_scale = 0.5#  Scale the actions to make them more manageable
+  env_cfg.sim_dt = 0.004
+  env_cfg.action_scale = 1#  Scale the actions to make them more manageable
   env_cfg.Kp_pri=50.0
   env_cfg.Kd_pri=20.0
   env_cfg.Kp_rot=25.0
@@ -124,22 +124,22 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   env_cfg.reward_config.scales.orientation = -0.0      # Penalize not being upright
   env_cfg.reward_config.scales.lin_vel_z = -0.0        # Penalize vertical velocity
   env_cfg.reward_config.scales.ang_vel_xy = -0.00      # Penalize spinning
-  env_cfg.reward_config.scales.torques = -0.0000       # Encourage energy efficiency
+  env_cfg.reward_config.scales.torques = -0.0001       # Encourage energy efficiency
   env_cfg.reward_config.scales.action_rate = -0.0001       # Encourage smooth actions
   #env_cfg.reward_config.scales.dof_pos_limits = -0.0     # Penalize hitting joint limits
-  env_cfg.reward_config.scales.energy = -0.0     # Penalize exceeding joint velocity limits
+  env_cfg.reward_config.scales.energy = -0.0001     # Penalize exceeding joint velocity limits
   env_cfg.reward_config.scales.feet_slip = -0.0     # Penalize exceeding joint velocity limits
 
   # Reduce the dominance of the target-based reward
   env_cfg.reward_config.scales.distance_to_target = 10.0 # Reduced from 100.0
 
   # Disable rewards that are not helping yet or are unimplemented
-  env_cfg.reward_config.scales.vel_to_target = 0.0       # Disable velocity to target for now
+  env_cfg.reward_config.scales.vel_to_target = 100.0       # Disable velocity to target for now
   env_cfg.reward_config.scales.exploration_rate = 0.0    # Disable unimplemented exploration reward
   
   # --- End of Suggested Changes ---
 
-  env = CaveExplore(config=env_cfg, lidar_num_horizontal_rays=20, lidar_max_range=15.0, lidar_horizontal_angle_range=jp.pi * 2, lidar_vertical_angle_range=jp.pi / 6) # Updated LIDAR params for 3D
+  env = CaveExplore(config=env_cfg, lidar_num_horizontal_rays=10, lidar_max_range=15.0, lidar_horizontal_angle_range=jp.pi * 2, lidar_vertical_angle_range=jp.pi / 6) # Updated LIDAR params for 3D
 
   ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
   # Getting RL configuration parameters

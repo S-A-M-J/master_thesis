@@ -1,24 +1,5 @@
-r# @title Run RL simulation with joystick control
-
-import multiprocessing as mp
-import argparse
-try:
-    mp.set_start_method('spawn', force=True)
-except RuntimeError:
-    pass
-
+import sys
 import os
-
-NVIDIA_ICD_CONFIG_PATH = '/usr/share/glvnd/egl_vendor.d/10_nvidia.json'
-if not os.path.exists(NVIDIA_ICD_CONFIG_PATH):
-  with open(NVIDIA_ICD_CONFIG_PATH, 'w') as f:
-    f.write("""{
-    "file_format_version" : "1.0.0",
-    "ICD" : {
-        "library_path" : "libEGL_nvidia.so.0"
-    }
-}
-""")
 
 #Configure MuJoCo to use the EGL rendering backend (requires GPU)
 print('Setting environment variable to use GPU rendering:')

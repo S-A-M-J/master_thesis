@@ -5,19 +5,19 @@
 
 <!-- Set jacobian to sparse for tpu and dense for gpu. For more info go to mujoco xla page-->
 <mujoco model="reachbot">
-
+  <compiler angle="degree" autolimits="true"/>
   <!-- Limit contact points and geom pairs to reduce calculations since it cant be done automatically in mjx-->
 
 
   <default>
     <default class="armBase">
-      <geom size=".09 0.02515 0.0025" type="box" pos="0 0 0" rgba="0 .8 0 1"/>
+      <geom size=".09 0.02515 0.0025" type="box" pos="0 0 0" rgba="0 .8 0 1" contype="0" conaffinity="0"/>
     </default>
     <default class="actuatorRotational">
       <position forcerange="-25 25" inheritrange="1" kp="35"/>
       <default class="shoulder">
         <joint type="hinge" axis="0 0 1" damping="0.5" armature="0.005" frictionloss="0.3" limited="true" range="-180 180"/>
-        <geom size="0.075 0.0381 0.055" type="box" pos="0 0 0" rgba="0.7 0.7 0.7 1" mass="0.377"/>
+        <geom size="0.075 0.0381 0.055" type="box" pos="0 0 0" rgba="0.7 0.7 0.7 1" mass="0.377" contype="0" conaffinity="0"/>
       </default>
       <default class="elbow">
         <joint type="hinge" axis="1 0 0" pos="0 0 0" damping="0.5" armature="0.005" frictionloss="0.3" limited="true" range="0 230"/>
@@ -61,7 +61,6 @@
       <!-- <geom name="z_axis" fromto="0 0 0 0 0 0.1" type="capsule" size="0.005" rgba="0 0 1 1" contype="0" conaffinity="0"/> -->
     </body>
     <light directional="true" pos="0 0 5" dir="0 0 -1"/>
-    <!-- <geom name="floor" size="0 0 .05" type="plane" material="grid" contype="5" condim="3"/> -->
     <body name="mainBody" pos="0 0 0.5">
       <camera name="track" pos="-1  0 0.316" xyaxes="1 0 -1 0 1 0" mode="trackcom"/>
       <site name="imu" pos="0 0 0.1"/>

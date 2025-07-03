@@ -394,6 +394,80 @@ class CaveExplore(mjx_env.MjxEnv):
     stickiness_action = action[self.mjx_model.nu:] 
     motor_targets = state_formatted + actuator_action * self._config.action_scale
 
+    contacts = state.data.contact
+    
+    # Check if there are any contacts first
+    if state.data.ncon > 0:
+        contacts = state.data.contact
+        geom1_ids = contacts.geom1[:state.data.ncon]
+        geom2_ids = contacts.geom2[:state.data.ncon]
+        
+        # Use JAX operations instead of Python for loop and if statement
+        geom1_is_wall = jp.isin(geom1_ids, self._floor_geom_ids)
+        geom2_is_wall = jp.isin(geom2_ids, self._floor_geom_ids)
+        geom1_is_robot = jp.isin(geom1_ids, self._boom_geom_ids)
+        geom2_is_robot = jp.isin(geom2_ids, self._boom_geom_ids)
+        geom1_is_torso = geom1_ids == self._torso_body_id
+        geom2_is_torso = geom2_ids == self._torso_body_id
+        
+        # Count wall-wall contacts using JAX operations
+        wall_wall_contacts = geom1_is_wall & geom2_is_wall
+        wall_robot_contacts = (geom1_is_wall & geom2_is_robot) | (geom2_is_wall & geom1_is_robot)
+        wall_torso_contacts = (geom1_is_wall & geom2_is_torso) | (geom2_is_wall & geom1_is_torso)
+        wall_robot_count = jp.sum(wall_robot_contacts)
+        wall_wall_count = jp.sum(wall_wall_contacts)
+        wall_torso_count = jp.sum(wall_torso_contacts)
+        
+        # Count unique wall-robot contact pairs
+        all_wall_robot_contacts = wall_robot_contacts | wall_torso_contacts
+        total_wall_robot_count = jp.sum(all_wall_robot_contacts)
+        
+        # Create normalized geom pairs (smaller ID first for consistency)
+        geom_pairs = jp.stack([jp.minimum(geom1_ids, geom2_ids), jp.maximum(geom1_ids, geom2_ids)], axis=1)
+        
+        # Count unique pairs using vectorized operations
+        unique_wall_robot_pairs = jp.where(
+            total_wall_robot_count > 0,
+            jp.sum(jp.logical_and(
+                all_wall_robot_contacts,
+                jp.concatenate([
+                    jp.array([True]),  # First contact is always unique
+                    jp.logical_not(jp.any(
+                        jp.all(
+                            geom_pairs[1:, None] == geom_pairs[None, :-1], 
+                            axis=2
+                        ), 
+                        axis=1
+                    ))
+                ])[:state.data.ncon]
+            )),
+            0
+        )
+        
+        # Convert to Python int only for printing (outside of traced computation)
+        # Note: This print will only work in eager mode, not in JIT compiled code
+        # You may want to remove this or use jax.debug.print for JIT compatibility
+        jax.debug.print("Wall-wall contacts: {wall_wall_count}, wall-robot contacts {wall_robot_count}, wall-torso contacts: {wall_torso_count}, unique wall-robot pairs: {unique_pairs}, total contacts: {ncon}", 
+                        wall_wall_count=wall_wall_count, wall_robot_count=wall_robot_count, wall_torso_count=wall_torso_count, unique_pairs=unique_wall_robot_pairs, ncon=state.data.ncon)
+        if state.data.ncon > self._max_contacts:
+            self._max_contacts = state.data.ncon
+            # Remove the print statements or use jax.debug.print instead
+            # print(f"Max contacts updated to {self._max_contacts} based on current step.")
+            # print(f"Wall-wall contacts: {wall_wall_count} out of {state.data.ncon} total")
+    
+    # ... rest of the method remains the same
+
+    # --- STABILITY FIX: CLAMP MOTOR TARGETS ---
+    # Prevent motor targets from jumping too far from the current position.
+    # This limits the magnitude of PD controller forces, preventing instability.
+    # max_delta = 0.2  # Max allowed change from current joint position per step (in radians)
+    # motor_targets = jp.clip(motor_targets, 
+    #                        state_formatted - max_delta, 
+    #                        state_formatted + max_delta)
+    # As a safety measure, also clip to the absolute joint limits.
+    #motor_targets = jp.clip(motor_targets, self._lowers, self._uppers)
+    # --- END OF FIX ---
+
     # Handle contacts properly - in MJX, contacts is a struct with arrays
     contacts = state.data.contact
     
