@@ -109,10 +109,8 @@ def default_config() -> config_dict.ConfigDict:
           kick_wait_times=[1.0, 3.0],
       ),
       stickiness_config=config_dict.create(
-          enable=True,  # Enable stickiness forces
-          stickiness_force=50.0,  # Force applied when stickiness is activated
-          min_activation_threshold=0.5,  # Threshold for activating stickiness
-          deactivation_threshold=0.3,  # Threshold for deactivating stickiness (hysteresis)
+          enable=False,  # Enable stickiness forces
+          stickiness_force=100.0,  # Force applied when stickiness is activated
       )
   )
 
@@ -129,7 +127,7 @@ class CaveExplore(mjx_env.MjxEnv):
       lidar_num_horizontal_rays: int = 3,
       lidar_max_range: float = 10.0,
       lidar_horizontal_angle_range: float = jp.pi * 2,
-      lidar_num_vertical_rays: int = 3,
+      lidar_num_vertical_rays: int = 2,
       lidar_vertical_angle_range: float = jp.pi / 6,
   ):
     # Replace default config with provided config and overrides
@@ -198,62 +196,9 @@ class CaveExplore(mjx_env.MjxEnv):
     # Initialize IMU site ID which is needed for get_gravity method
     self._imu_site_id = self._active_env["mj_model"].site("imu").id
 
-    # Pre-compute boom geom mappings for JAX compatibility and efficient contact filtering
-    # Optimizations implemented:
-    # 1. Use jp.isin() instead of individual binary searches for vectorized lookups
-    # 2. Sort arrays once during initialization for efficient operations
-    # 3. Minimize array operations and intermediate allocations
-    # 4. Early exit conditions to avoid unnecessary computations
-    # 5. Vectorized force calculations instead of per-contact processing
-    mj_model = self._active_env["mj_model"]
-    
-    # Find all boom end geoms and create JAX-compatible arrays
-    boom_geom_ids = []
-    boom_nums = []
-    boom_body_ids = []
-    
-    for i in range(mj_model.ngeom):
-        geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, i)
-        if geom_name and "boomEnd" in geom_name:
-            boom_geom_ids.append(i)
-            # Extract boom number
-            try:
-                boom_num = int(geom_name.split('boomEnd')[1])
-            except (ValueError, IndexError):
-                boom_num = 0
-            boom_nums.append(boom_num)
-            boom_body_ids.append(mj_model.geom_bodyid[i])
-    
-    # Convert to JAX arrays for JIT compatibility
-    self._boom_geom_ids = jp.array(boom_geom_ids)
-    self._boom_nums = jp.array(boom_nums)
-    self._boom_body_ids = jp.array(boom_body_ids)
-    
-    # Sort boom arrays for efficient binary search
-    if len(boom_geom_ids) > 0:
-        sorted_indices = jp.argsort(self._boom_geom_ids)
-        self._boom_geom_ids = self._boom_geom_ids[sorted_indices]
-        self._boom_nums = self._boom_nums[sorted_indices] 
-        self._boom_body_ids = self._boom_body_ids[sorted_indices]
-    
-    # Also need floor/wall geom IDs - sort these too for efficiency
-    floor_geom_ids = []
-    for i in range(mj_model.ngeom):
-        geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, i)
-        if geom_name and ("cave_wall" in geom_name or "floor" in geom_name):
-            floor_geom_ids.append(i)
-    
-    self._floor_geom_ids = jp.array(sorted(floor_geom_ids)) if floor_geom_ids else jp.array([])
-    
-    print(f"Found {len(boom_geom_ids)} boom end geoms")
-    print(f"Found {len(floor_geom_ids)} floor/wall geoms")
-
     print("CaveExplore task initialized with model:", self._model)
     print("CaveExplore task action space:", self.action_size)
     print("CaveExplore task observation space:", self.observation_size)
-
-    # Track maximum contacts for debugging
-    max_contacts = 12
 
   def _select_random_env(self) -> None:
     env_idx = random.randint(0, self._config.cave_batch_size - 1)
@@ -355,8 +300,8 @@ class CaveExplore(mjx_env.MjxEnv):
         "init_dist_to_target": init_dist_to_target,
         "rng": rng,
         "target_pos": self._active_env["target_pos"],
-        "last_act": jp.zeros(self.action_size),  # Changed from self.mjx_model.nu to self.action_size
-        "last_last_act": jp.zeros(self.action_size),  # Changed from self.mjx_model.nu to self.action_size
+        "last_act": jp.zeros(self.mjx_model.nu),
+        "last_last_act": jp.zeros(self.mjx_model.nu),
         "last_contact": jp.zeros(len(self._feet_geom_id), dtype=bool),
         "steps_until_next_pert": steps_until_next_pert,
         "pert_duration_seconds": pert_duration_seconds,
@@ -367,10 +312,7 @@ class CaveExplore(mjx_env.MjxEnv):
         "pert_mag": pert_mag,
         "last_pos": qpos[0:3],
         "pos_history": pos_history,  
-        "steps": 0,
-        # Stickiness state tracking for each boom
-        "boom_stickiness_active": jp.zeros(4, dtype=bool),  # Track which booms are currently stuck
-        "last_stickiness_ctrl": jp.zeros(4),  # Track previous stickiness control values
+        "steps": 0,  
     }
 
     metrics = {}
@@ -395,26 +337,11 @@ class CaveExplore(mjx_env.MjxEnv):
     stickiness_action = action[self.mjx_model.nu:] 
     motor_targets = state_formatted + actuator_action * self._config.action_scale
 
-    # --- STABILITY FIX: CLAMP MOTOR TARGETS ---
-    # Prevent motor targets from jumping too far from the current position.
-    # This limits the magnitude of PD controller forces, preventing instability.
-    # max_delta = 0.2  # Max allowed change from current joint position per step (in radians)
-    # motor_targets = jp.clip(motor_targets, 
-    #                        state_formatted - max_delta, 
-    #                        state_formatted + max_delta)
-    # As a safety measure, also clip to the absolute joint limits.
-    #motor_targets = jp.clip(motor_targets, self._lowers, self._uppers)
-    # --- END OF FIX ---
-
     # Handle contacts properly - in MJX, contacts is a struct with arrays
     contacts = state.data.contact
     
     # Check if there are any contacts first
     if state.data.ncon > 0:
-        if state.data.ncon > max_contacts:
-            max_contacts = state.data.ncon
-            print(f"Max contacts updated to {max_contacts} based on current step.")
-        # Ensure contacts.geom is a 2D array with shape (ncon, 2
         # Get contact geom pairs - contacts.geom is shape (ncon, 2)
         contact_geom1 = contacts.geom[:, 0]  # First geom in each contact
         contact_geom2 = contacts.geom[:, 1]  # Second geom in each contact
@@ -446,6 +373,45 @@ class CaveExplore(mjx_env.MjxEnv):
         self.mjx_model, state.data, motor_targets, self.n_substeps
     )
     
+    # --- CONDITIONAL DEBUGGING ---
+    # Capture the qpos state immediately after the physics step
+    qpos_after_step = data.qpos
+    # Check if any NaN values appeared in the simulation state
+    is_nan = jp.any(jp.isnan(qpos_after_step))
+
+    # Define a function to print debug info. This will only be executed if is_nan is True.
+    def print_debug_info(state, motor_targets, data, original_qpos):
+        # This function is called for all vmapped environments if any one has a NaN.
+        # We add a check here to only print the data for the environment that IS NaN.
+        is_nan_local = jp.any(jp.isnan(original_qpos))
+        
+        def print_for_nan_env(state, motor_targets, data, qpos_with_nan):
+            # Convert float to its integer bit representation to bypass float sanitization
+            qpos_bit_representation = jax.lax.bitcast_convert_type(qpos_with_nan, jp.int32)
+
+            jax.debug.print("--- NaN DETECTED (Isolating faulty environment) ---")
+            jax.debug.print("motor_targets: {x}", x=motor_targets)
+            jax.debug.print("qpos before step: {x}", x=state.data.qpos)
+            jax.debug.print("qvel before step: {x}", x=state.data.qvel)
+            jax.debug.print("qpos after step (float): {x}", x=qpos_with_nan)
+            jax.debug.print("qpos after step (integer bits): {x}", x=qpos_bit_representation)
+            jax.debug.print("qvel after step: {x}", x=data.qvel)
+            jax.debug.print("actuator_force after step: {x}", x=data.actuator_force)
+            jax.debug.print("--- END OF ISOLATED DEBUG INFO ---")
+
+        # Only print if the local data for this specific environment has a NaN.
+        jax.lax.cond(is_nan_local,
+                     lambda: print_for_nan_env(state, motor_targets, data, original_qpos),
+                     lambda: None)
+
+
+    # Use jax.lax.cond to only print when a NaN is found.
+    # Pass the original qpos array to the debug function.
+    jax.lax.cond(is_nan, 
+                 lambda: print_debug_info(state, motor_targets, data, qpos_after_step), 
+                 lambda: None)
+    
+    #jax.debug.print("step qpos: {qpos}",qpos=data.qpos)
     
     # Renormalize quaternion to prevent numerical drift
     data = data.replace(qpos=renormalize_quat(data.qpos))
@@ -481,155 +447,66 @@ class CaveExplore(mjx_env.MjxEnv):
     state.info["steps"] += 1
     return state
   
-  def _prefilter_boom_wall_contacts(self, contacts, ncon: int) -> tuple:
-    """Pre-filter contacts to only include boom-wall interactions with optimized lookups."""
-    if ncon == 0:
-        return jp.array([], dtype=bool), jp.array([], dtype=jp.int32), jp.array([], dtype=jp.int32), jp.array([]).reshape(0, 3)
-    
-    # Handle both contact field access patterns - MJX uses different structures
-    if hasattr(contacts, 'geom'):
-        # Standard MJX contact structure
-        geom1_ids = contacts.geom[:ncon, 0]
-        geom2_ids = contacts.geom[:ncon, 1]
-        contact_positions = contacts.pos[:ncon]
-    else:
-        # Alternative contact structure
-        geom1_ids = contacts.geom1[:ncon]
-        geom2_ids = contacts.geom2[:ncon]
-        contact_positions = contacts.pos[:ncon]
-    
-    # Efficient vectorized lookup using isin (faster than individual binary searches)
-    is_boom1 = jp.isin(geom1_ids, self._boom_geom_ids)
-    is_boom2 = jp.isin(geom2_ids, self._boom_geom_ids)
-    is_wall1 = jp.isin(geom1_ids, self._floor_geom_ids)
-    is_wall2 = jp.isin(geom2_ids, self._floor_geom_ids)
-    
-    # Find boom-wall contacts: (boom1 & wall2) OR (boom2 & wall1)
-    boom_wall_mask = (is_boom1 & is_wall2) | (is_boom2 & is_wall1)
-    
-    # Extract boom and wall geom IDs for valid contacts using more efficient operations
-    boom_geom_ids = jp.where(is_boom1 & is_wall2, geom1_ids,
-                            jp.where(is_boom2 & is_wall1, geom2_ids, -1))
-    wall_geom_ids = jp.where(is_boom1 & is_wall2, geom2_ids,
-                            jp.where(is_boom2 & is_wall1, geom1_ids, -1))
-    
-    return boom_wall_mask, boom_geom_ids, wall_geom_ids, contact_positions
-
-  def _update_stickiness_state(self, info: Dict[str, Any], stickiness_ctrl: jax.Array) -> Dict[str, Any]:
-    """Update boom stickiness activation state with hysteresis."""
-    last_ctrl = info["last_stickiness_ctrl"]
-    currently_active = info["boom_stickiness_active"]
-    
-    # Hysteresis thresholds
-    activate_threshold = self._config.stickiness_config.min_activation_threshold
-    deactivate_threshold = self._config.stickiness_config.deactivation_threshold
-    
-    # Activation: not currently active AND control signal crosses activation threshold
-    newly_activated = (~currently_active) & (last_ctrl <= activate_threshold) & (stickiness_ctrl > activate_threshold)
-    
-    # Deactivation: currently active AND control signal drops below deactivation threshold  
-    newly_deactivated = currently_active & (stickiness_ctrl < deactivate_threshold)
-    
-    # Update state
-    new_active_state = (currently_active | newly_activated) & (~newly_deactivated)
-    
-    # Update info dict
-    info["boom_stickiness_active"] = new_active_state
-    info["last_stickiness_ctrl"] = stickiness_ctrl
-    
-    return info
-
   def _apply_stickiness_forces(self, state: mjx_env.State, stickiness_ctrl: jax.Array, contacts) -> jax.Array:
-    """Apply stickiness forces with efficient pre-filtering and state management."""
-    xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
+    """Applies a stickiness force to the robot when a boom end touches a cave wall and 
+    the corresponding stickiness control from the neural network is activated"""
     
+    # Initialize external forces array
+    xfrc_applied = jp.zeros((self._active_env["mjx_model"].nbody, 6))
+    
+    # Check if there are any contacts first
     if state.data.ncon == 0:
         return xfrc_applied
     
-    # Update stickiness state with hysteresis
-    state.info = self._update_stickiness_state(state.info, stickiness_ctrl)
+    # Get contact geom pairs - contacts.geom is shape (ncon, 2)
+    contact_geom1 = contacts.geom[:, 0]  # First geom in each contact
+    contact_geom2 = contacts.geom[:, 1]  # Second geom in each contact
     
-    # Pre-filter to only boom-wall contacts
-    boom_wall_mask, boom_geom_ids, wall_geom_ids, contact_positions = self._prefilter_boom_wall_contacts(
-        contacts, state.data.ncon
-    )
+    # Find contacts between boom ends and cave walls
+    boom_idxs = []
+    wall_idxs = []
     
-    # Early exit if no boom-wall contacts
-    if jp.sum(boom_wall_mask) == 0:
-        return xfrc_applied
+    for i in range(state.data.ncon):
+      geom1_id = contact_geom1[i]
+      geom2_id = contact_geom2[i]
+      
+      # Get geom names
+      geom1_name = self._active_env["mjx_model"].geom_id2name[geom1_id] if geom1_id < len(self._active_env["mjx_model"].geom_id2name) else ""
+      geom2_name = self._active_env["mjx_model"].geom_id2name[geom2_id] if geom2_id < len(self._active_env["mjx_model"].geom_id2name) else ""
+      
+      # Check if one object is a boom end and the other is a cave wall
+      if "boomEnd" in geom1_name and "cave_wall" in geom2_name:
+        boom_idxs.append(geom1_id)
+        wall_idxs.append(geom2_id)
+      elif "boomEnd" in geom2_name and "cave_wall" in geom1_name:
+        boom_idxs.append(geom2_id)
+        wall_idxs.append(geom1_id)
     
-    # Filter to only valid boom-wall contacts
-    valid_boom_geoms = boom_geom_ids[boom_wall_mask]
-    valid_contact_pos = contact_positions[boom_wall_mask]
-    
-    # Create efficient lookup maps for boom geoms to avoid repeated searches
-    # Use vectorized searchsorted for all valid boom geoms at once
-    boom_indices = jp.searchsorted(self._boom_geom_ids, valid_boom_geoms)
-    
-    # Validate indices and ensure they point to correct geoms
-    valid_idx_mask = (boom_indices < len(self._boom_geom_ids)) & \
-                     (self._boom_geom_ids[boom_indices] == valid_boom_geoms)
-    
-    # Get boom numbers and body IDs for valid contacts
-    boom_nums = jp.where(valid_idx_mask, self._boom_nums[boom_indices], -1)
-    boom_body_ids = jp.where(valid_idx_mask, self._boom_body_ids[boom_indices], -1)
-    
-    # Check which booms are in active sticky state
-    # Handle potential out-of-bounds safely
-    boom_active_mask = jp.zeros_like(boom_nums, dtype=bool)
-    for i in range(4):  # Assuming 4 booms max
-        boom_i_mask = (boom_nums == i) & valid_idx_mask
-        boom_active_mask = jp.where(
-            boom_i_mask,
-            state.info["boom_stickiness_active"][i],
-            boom_active_mask
-        )
-    
-    # Final filter: valid boom contacts that are actually active
-    final_valid_mask = valid_idx_mask & boom_active_mask
-    
-    # Early exit if no active boom contacts
-    if jp.sum(final_valid_mask) == 0:
-        return xfrc_applied
-    
-    # Extract final valid data
-    final_boom_body_ids = boom_body_ids[final_valid_mask]
-    final_contact_pos = valid_contact_pos[final_valid_mask]
-    
-    # Calculate forces vectorized for all valid contacts
-    boom_positions = state.data.xpos[final_boom_body_ids]
-    direction_vectors = final_contact_pos - boom_positions
-    distances = jp.linalg.norm(direction_vectors, axis=1, keepdims=True)
-    
-    # Avoid division by zero and normalize
-    safe_distances = jp.maximum(distances, 1e-8)
-    normalized_directions = direction_vectors / safe_distances
-    
-    force_magnitude = self._config.stickiness_config.stickiness_force
-    forces = force_magnitude * normalized_directions
-    
-    # Apply forces using efficient JAX operations
-    return self._accumulate_forces_efficiently(xfrc_applied, final_boom_body_ids, forces)
-
-  def _accumulate_forces_efficiently(self, xfrc_applied, body_ids, forces):
-    """Efficiently accumulate forces using JAX operations."""
-    if body_ids.shape[0] == 0:
-        return xfrc_applied
-    
-    # Use JAX's advanced indexing for efficient force accumulation
-    # This automatically handles multiple forces on the same body by summing them
-    
-    # Apply translational forces (first 3 components of xfrc_applied)
-    for i in range(forces.shape[0]):
-        body_id = body_ids[i]
-        force = forces[i]
-        # Apply force only if it's significant to avoid numerical noise
-        force_mag_sq = jp.sum(jp.square(force))
-        xfrc_applied = jp.where(
-            force_mag_sq > 1e-12,  # Threshold for significant force
-            xfrc_applied.at[body_id, :3].add(force),
-            xfrc_applied
-        )
+    # Apply stickiness forces for each contact where stickiness is activated
+    for i, (boom_id, wall_id) in enumerate(zip(boom_idxs, wall_idxs)):
+      # Get the boom number from its name to index into stickiness_signals
+      boom_name = self._active_env["mjx_model"].geom_id2name[boom_id]
+      boom_num = int(boom_name.split('boomEnd')[1]) if len(boom_name.split('boomEnd')) > 1 else i % self.num_booms
+      
+      # Check if stickiness is activated for this boom (threshold > 0.5)
+      if boom_num < len(stickiness_ctrl) and stickiness_ctrl[boom_num] > 0.5:
+        # Get positions
+        boom_pos = state.data.geom_xpos[boom_id]
+        wall_pos = state.data.geom_xpos[wall_id]
+        
+        # Calculate direction and distance
+        direction_vector = wall_pos - boom_pos
+        distance = jp.linalg.norm(direction_vector)
+        normalized_direction = direction_vector / (distance + 1e-6)
+        
+        # Apply force to the body containing this boom end
+        boom_body_id = self._active_env["mjx_model"].geom_bodyid[boom_id]
+        force_magnitude = 100.0  # Adjust this value to control stickiness strength
+        
+        # Add force to the existing forces
+        current_forces = xfrc_applied[boom_body_id]
+        new_forces = current_forces.at[:3].add(force_magnitude * normalized_direction)
+        xfrc_applied = xfrc_applied.at[boom_body_id].set(new_forces)
     
     return xfrc_applied
   
@@ -646,15 +523,9 @@ class CaveExplore(mjx_env.MjxEnv):
      has_waited_long_enough = info["steps"] > self._no_movement_steps
      is_not_moving = movement < self._no_movement_threshold
      no_movement = is_not_moving & has_waited_long_enough
-     
-     # NaN detection termination
-     has_nan = (jp.any(jp.isnan(qpos)) | 
-                jp.any(jp.isnan(data.qvel)) | 
-                jp.any(jp.isnan(data.ctrl)) |
-                jp.any(jp.isinf(qpos)) |
-                jp.any(jp.isinf(data.qvel)))
 
-     return out_of_bounds | no_movement | has_nan # Include NaN in termination conditions
+     #has_fallen = self.get_upvector(data)[-1] < 0.0 # Check if the robot has fallen
+     return out_of_bounds | no_movement #| has_fallen # Return True if either condition is met
 
 
   def _get_obs(

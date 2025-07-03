@@ -3,7 +3,8 @@
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 
 import multiprocessing as mp
 try:
@@ -27,6 +28,8 @@ from jax import numpy as jp
 #jax.config.update('jax_enable_x64', True) # However, this will slow down the training a lot
 jax.config.update('jax_default_matmul_precision', 'high')
 jax.config.update("jax_debug_nans", True)
+jax.config.update('jax_traceback_filtering', 'off') # Enable traceback filtering to get better error messages
+#jax.config.update('jax_disable_jit', True)
 # Check if GPU is available
 
 gpu_available = jax.devices()[0].platform == 'gpu'
@@ -109,9 +112,12 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   from tasks.cave_exploration.cave_exploration import default_config as reachbot_config
   env_cfg = reachbot_config()
   
-  env_cfg.sim_dt = 0.004
-  env_cfg.action_scale = 0.2 # Scale the actions to make them more manageable
-  env_cfg.Kp_pri=100.0
+  env_cfg.sim_dt = 0.002
+  env_cfg.action_scale = 0.5#  Scale the actions to make them more manageable
+  env_cfg.Kp_pri=50.0
+  env_cfg.Kd_pri=20.0
+  env_cfg.Kp_rot=25.0
+  env_cfg.Kd_rot=2.0
   
   # --- Suggested Reward Scale Changes ---
   # Enable core locomotion penalties to encourage stable movement
@@ -119,14 +125,16 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   env_cfg.reward_config.scales.lin_vel_z = -0.0        # Penalize vertical velocity
   env_cfg.reward_config.scales.ang_vel_xy = -0.00      # Penalize spinning
   env_cfg.reward_config.scales.torques = -0.0000       # Encourage energy efficiency
-  env_cfg.reward_config.scales.action_rate = -0.0       # Encourage smooth actions
-  env_cfg.reward_config.scales.dof_pos_limits = -0.0     # Penalize hitting joint limits
+  env_cfg.reward_config.scales.action_rate = -0.0001       # Encourage smooth actions
+  #env_cfg.reward_config.scales.dof_pos_limits = -0.0     # Penalize hitting joint limits
+  env_cfg.reward_config.scales.energy = -0.0     # Penalize exceeding joint velocity limits
+  env_cfg.reward_config.scales.feet_slip = -0.0     # Penalize exceeding joint velocity limits
 
   # Reduce the dominance of the target-based reward
   env_cfg.reward_config.scales.distance_to_target = 10.0 # Reduced from 100.0
 
   # Disable rewards that are not helping yet or are unimplemented
-  env_cfg.reward_config.scales.vel_to_target = 100.0       # Disable velocity to target for now
+  env_cfg.reward_config.scales.vel_to_target = 0.0       # Disable velocity to target for now
   env_cfg.reward_config.scales.exploration_rate = 0.0    # Disable unimplemented exploration reward
   
   # --- End of Suggested Changes ---
@@ -163,18 +171,41 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
   # Function to display the training progress
   def progress(num_steps, metrics):
+    # Check for NaN values in episode reward using proper NaN detection
+    episode_reward = metrics["eval/episode_reward"]
+    if jp.isnan(episode_reward) or jp.isinf(episode_reward):
+        print("Warning: NaN/Inf reward encountered, aborting.")
+        run_duration = str(datetime.now() - times[0])
+        send_message_sync(
+            task="Cave Exploration RL Training",
+            duration=run_duration,
+            result="Failed: NaN/Inf reward encountered"
+        )
+        raise ValueError(f"NaN/Inf reward encountered at step {num_steps}: {episode_reward}")
+    
     times.append(datetime.now())
     timesteps.append(num_steps)
-    total_rewards.append(metrics["eval/episode_reward"])
+    total_rewards.append(episode_reward)
     total_rewards_std.append(metrics["eval/episode_reward_std"])
+    
+    # Filter out NaN/Inf values before logging to TensorBoard to avoid warnings
     for key, value in metrics.items():
-        writer.add_scalar(key, value, num_steps)
-        writer.flush()
+        if not (jp.isnan(value) or jp.isinf(value)):
+            writer.add_scalar(key, value, num_steps)
+        else:
+            print(f"Warning: Skipping NaN/Inf value for metric '{key}' at step {num_steps}")
+    
+    writer.flush()
     metrics["timesteps"] = num_steps
     metrics["time"] = (times[-1] - times[0]).total_seconds()
     rewards.append(metrics)
     percent_complete = (num_steps / ppo_training_params["num_timesteps"]) * 100
-    print(f"step: {num_steps}/{ppo_training_params['num_timesteps']} ({percent_complete:.1f}%), reward: {total_rewards[-1]:.3f} +/- {total_rewards_std[-1]:.3f}")
+    if num_steps == 0:
+        remaining_time_str = "unknown"
+    else:
+        remaining_time = (ppo_training_params["num_timesteps"] - num_steps) * (times[-1] - times[0]).total_seconds() / num_steps / 60
+        remaining_time_str = f"{remaining_time:.2f}"
+    print(f"step: {num_steps}/{ppo_training_params['num_timesteps']} ({percent_complete:.1f}%), reward: {total_rewards[-1]:.3f} +/- {total_rewards_std[-1]:.3f}, time passed (min): {(times[-1] - times[0]).total_seconds() / 60:.2f} min, calculated time left (min): {remaining_time_str} min")
 
   
   # Getting the network factory
@@ -199,6 +230,32 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
   #randomizer = registry.get_domain_randomizer(ENV_STR)
   randomizer = reachbot_randomize
+  
+  print("Saving configs")
+  # Save configs as json in results
+  configs = {
+      "env_cfg": env_cfg.to_dict(),
+      "ppo_params": ppo_training_params
+  }
+  config_path = os.path.join(logdir, 'config.json')
+  # Replace Infinity with a large number or null
+  def replace_infinity(obj):
+      if isinstance(obj, dict):
+          return {k: replace_infinity(v) for k, v in obj.items()}
+      elif isinstance(obj, list):
+          return [replace_infinity(v) for v in obj]
+      elif isinstance(obj, float) and obj == float('inf'):
+          return 1e308
+      return obj
+
+  # Update the configs before saving
+  configs = replace_infinity(configs)
+
+  # Save environment configuration
+  with open(config_path, "w", encoding="utf-8") as fp:
+    json.dump(configs, fp, indent=4)
+  print(f"Configuration saved to {config_path}")
+  writer.add_text('config', json.dumps(configs, indent=4))
 
   # Training the model
   print("Training the model...")
@@ -242,30 +299,6 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
     print(f"time to jit: {times[1] - times[0]}")
     print(f"time to train: {times[-1] - times[1]}")
 
-  # Save configs as json in results
-  configs = {
-      "env_cfg": env_cfg.to_dict(),
-      "ppo_params": ppo_training_params
-  }
-  config_path = os.path.join(logdir, 'config.json')
-  # Replace Infinity with a large number or null
-  def replace_infinity(obj):
-      if isinstance(obj, dict):
-          return {k: replace_infinity(v) for k, v in obj.items()}
-      elif isinstance(obj, list):
-          return [replace_infinity(v) for v in obj]
-      elif isinstance(obj, float) and obj == float('inf'):
-          return 1e308
-      return obj
-
-  # Update the configs before saving
-  configs = replace_infinity(configs)
-
-  # Save environment configuration
-  with open(config_path, "w", encoding="utf-8") as fp:
-    json.dump(configs, fp, indent=4)
-  print(f"Configuration saved to {config_path}")
-  writer.add_text('config', json.dumps(configs, indent=4))
 
   # Store the results in a file
   results_path = os.path.join(logdir, 'results.txt')
@@ -308,7 +341,8 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
 
   jit_reset = jax.jit(env.reset)
   jit_step = jax.jit(env.step)
-  jit_inference_fn = jax.jit(make_inference_fn(params, deterministic=True))
+  inference_fn = make_inference_fn(params, deterministic=True)
+  jit_inference_fn = jax.jit(inference_fn)
 
 
   rng = jax.random.PRNGKey(0)
@@ -356,7 +390,7 @@ if __name__ == '__main__':
   
   # Modify params for faster training
   ppo_training_params["num_timesteps"] = 10_000_000 # Reduce from 60000000
-  ppo_training_params["episode_length"] = 2000 # Max episode length
+  ppo_training_params["episode_length"] = 10000 # Max episode length
   ppo_training_params["num_envs"] = 4096 # Reduce from 2048
   ppo_training_params["batch_size"] = 512 # Number of samples randomly chosen from the rollout data for training
   ppo_training_params["num_minibatches"] = 16 # Splits batch_size into num_minibatches for separate gradient updates
@@ -364,6 +398,6 @@ if __name__ == '__main__':
   ppo_training_params["unroll_length"] = 100 # Number of steps to run in each environment before gathering rollouts
   ppo_training_params["entropy_cost"] = 0.02
   ppo_training_params["learning_rate"] = 0.0003 # Learning rate for the optimizerppo
-  ppo_training_params["network_factory"]["policy_hidden_layer_sizes"] = [1024, 512, 256, 128] # Hidden layer sizes for the policy network
-  ppo_training_params["network_factory"]["value_hidden_layer_sizes"] = [1024, 512, 256, 128] # Hidden layer sizes for the policy network
+  #ppo_training_params["network_factory"]["policy_hidden_layer_sizes"] = [1024, 512, 256, 128] # Hidden layer sizes for the policy network
+  #ppo_training_params["network_factory"]["value_hidden_layer_sizes"] = [1024, 512, 256, 128] # Hidden layer sizes for the policy network
   trainModel(ppo_training_params)

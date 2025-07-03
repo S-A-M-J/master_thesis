@@ -9,12 +9,12 @@
         <joint name="revolver41" class="shoulder"/>
         <geom name="Motor41" class="shoulder"/>
         <body name="Motor42" pos="0 0 0.036176">
-            <site name="motorSite4" pos="0 0 -0.02" size="0.0001"/>
+            <site name="motorSite4" pos="0 0 -0.02" size="0.005"/>
             <geom name="Motor42" class="elbow"/>
             <joint name="revolver42" class="elbow"/>
             <body name="boom4" pos="0 0.059837 -0.0525">
                 <joint name="prismatic4" class="prismatic"/>
-                <site name="boomEndSite4" pos="0 0 0" size="0.0001"/>
+                <site name="boomEndSite4" pos="0 0 0" size="0.005"/>
                 <geom name="boomEnd4" class="foot"/>
             </body>
         </body>

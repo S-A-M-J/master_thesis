@@ -1,0 +1,19 @@
+<robot>
+  <actuator>
+    <position class="actuatorRotational" name="motor11" joint="revolver11" ctrllimited="true" ctrlrange="-360 360"/> 
+    <position class="actuatorRotational" name="motor12" joint="revolver12" ctrllimited="true" ctrlrange="0 230"/>
+    <position class="actuatorPrismatic" name="boomMotor1" joint="prismatic1" ctrllimited="true" ctrlrange="0 1.7"/>
+    <position class="actuatorRotational" name="motor21" joint="revolver21" ctrllimited="true" ctrlrange="-360 360"/>
+    <position class="actuatorRotational" name="motor22" joint="revolver22" ctrllimited="true" ctrlrange="0 230"/>
+    <position class="actuatorPrismatic" name="boomMotor2" joint="prismatic2" ctrllimited="true" ctrlrange="0 1.7"/>
+    <position class="actuatorRotational" name="motor31" joint="revolver31" ctrllimited="true" ctrlrange="-360 360"/>
+    <position class="actuatorRotational" name="motor32" joint="revolver32" ctrllimited="true" ctrlrange="0 230"/>
+    <position class="actuatorPrismatic" name="boomMotor3" joint="prismatic3" ctrllimited="true" ctrlrange="0 1.7"/>
+    <position class="actuatorRotational" name="motor41" joint="revolver41" ctrllimited="true" ctrlrange="-360 360"/>
+    <position class="actuatorRotational" name="motor42" joint="revolver42" ctrllimited="true" ctrlrange="0 230"/>
+    <position class="actuatorPrismatic" name="boomMotor4" joint="prismatic4" ctrllimited="true" ctrlrange="0 1.7"/>
+  </actuator>
+  <sensor>
+    <!-- Sensor definitions go here -->
+  </sensor>
+</robot>

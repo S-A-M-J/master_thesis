@@ -1,6 +1,12 @@
 
 import mujoco
 import os
+import sys
+
+# Add the project root to the Python path to resolve module imports
+#project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+#if project_root not in sys.path:
+#    sys.path.insert(0, project_root)
 
 import jax
 from etils import epath
@@ -14,10 +20,13 @@ from brax.training.agents.ppo import networks as ppo_networks
 from brax.io import model
 from jax import numpy as jp
 
-from reachbot.getup import default_config as reachbot_getup_config
-from reachbot.getup import Getup as ReachbotGetup
-from reachbot.joystick import Joystick as ReachbotJoystick
-from reachbot.joystick import default_config as reachbot_joystick_config
+#jax.config.update("jax_debug_nans", True)
+jax.config.update("jax_debug_infs", True)
+
+#from reachbot.getup import default_config as reachbot_getup_config
+#from reachbot.getup import Getup as ReachbotGetup
+#from reachbot.joystick import Joystick as ReachbotJoystick
+#from reachbot.joystick import default_config as reachbot_joystick_config
 
 import jax
 from mujoco_playground import wrapper
@@ -27,7 +36,7 @@ from ml_collections import config_dict
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-relative_ckpt_path = "joystick_2025-06-17_15-23-05"
+relative_ckpt_path = "cave_exploration/logs/cave_exploration-2025-06-24_09-01-51"
 
 ckpt_path = os.path.join(script_dir, relative_ckpt_path)
 
@@ -46,7 +55,7 @@ elif 'getup' in relative_ckpt_path:
     env_cfg = reachbot_getup_config()
 elif 'cave_exploration' in relative_ckpt_path:
     print('Rendering cave exploration task result')
-    from cave_exploration import default_config as cave_exploration_config
+    from tasks.cave_exploration.cave_exploration import default_config as cave_exploration_config
     env_cfg = cave_exploration_config()
 else:
     print('Unknown task')
@@ -61,6 +70,14 @@ if 'joystick' in relative_ckpt_path:
 elif 'getup' in relative_ckpt_path:
     env = ReachbotGetup(config=env_cfg, task="flat_terrain_basic")
 elif 'cave_exploration' in relative_ckpt_path:
+    from tasks.cave_exploration.cave_exploration import CaveExplore
+    env = CaveExplore(config=env_cfg, lidar_num_horizontal_rays=20, lidar_max_range=15.0, lidar_horizontal_angle_range=jp.pi * 2, lidar_vertical_angle_range=jp.pi / 6) # Updated LIDAR params for 3D
+    print(env.mj_model.actuator_ctrlrange)
+    print(env.mj_model.actuator_ctrllimited)
+    print(env.mjx_model.actuator_ctrlrange)
+    print(env.mjx_model.actuator_ctrllimited)
+
+
 
 # Get the PPO configuration
 ppo_params = locomotion_params.brax_ppo_config('Go1JoystickFlatTerrain')
@@ -117,14 +134,32 @@ for _ in range(n_episodes):
     for i in range(episode_length):
         act_rng, rng = jax.random.split(rng)
         ctrl, _ = jit_inference_fn(state.obs, act_rng)
+
+        # Check for infinities right after the policy network runs
+        if jp.any(jp.isinf(ctrl)):
+            print(f"Infinity detected in 'ctrl' at step {i}. Aborting.")
+            break
+
         state = jit_step(state, ctrl)
+
+        # Check for infinities right after the environment step
+        if jp.any(jp.isinf(state.obs['state'])):
+            print(f"Infinity detected in 'state.obs' after step {i}. Aborting.")
+            break
+
+
         state.info["command"] = command
         rollout.append(state)
+
+    
+    # If the inner loop broke, break the outer one too
+    if 'i' in locals() and i < episode_length - 1:
+        break
 
     render_every = 1
     width = 1920  # Full HD width (default is usually 640)
     height = 1080  # Full HD height (default is usually 480)
-    frames = env.render(rollout[::render_every], camera='track', width=width, height=height)
+    frames = env.render(rollout[::render_every], camera='track_global', width=width, height=height)
     video_path = os.path.join(ckpt_path, 'posttraining3.mp4')
     fps = 1.0 / env.dt
 

@@ -16,18 +16,18 @@
     <default class="actuatorRotational">
       <position forcerange="-25 25" inheritrange="1" kp="35"/>
       <default class="shoulder">
-        <joint type="hinge" axis="0 0 1" damping="0.5" armature="0.005" frictionloss="0.3" limited="true" range="-360 360"/>
+        <joint type="hinge" axis="0 0 1" damping="0.5" armature="0.005" frictionloss="0.3" limited="true" range="-180 180"/>
         <geom size="0.075 0.0381 0.055" type="box" pos="0 0 0" rgba="0.7 0.7 0.7 1" mass="0.377"/>
       </default>
       <default class="elbow">
-        <joint type="hinge" axis="1 0 0" pos="0 0 0" damping="0.5" armature="0.005" frictionloss="0.3" range="0 230"/>
+        <joint type="hinge" axis="1 0 0" pos="0 0 0" damping="0.5" armature="0.005" frictionloss="0.3" limited="true" range="0 230"/>
         <geom size="0.06313 0.0605" pos="0 0.0158975 0" euler="0 90 0" type="cylinder" rgba="1 0.1 0.1 1" contype="0" conaffinity="0" mass="1.046"/>
       </default>
     </default>
     <default class="actuatorPrismatic">
       <position forcerange="-476 476" inheritrange="1" kp="200"/>
       <default class="prismatic">
-        <joint type="slide" axis="0 1 0" armature="0.005" damping="20" frictionloss="1" limited="true" range="0 1.7"/>
+        <joint type="slide" axis="0 1 0" armature="0.005" damping="20" frictionloss="1" limited="true" range="0 0.5"/>
       </default>
     </default>
     <default class="armTendon">
@@ -101,18 +101,18 @@
     </spatial>
   </tendon>
   <actuator>
-    <position class="actuatorRotational" name="motor11" joint="revolver11"/> 
-    <position class="actuatorRotational" name="motor12" joint="revolver12"/>
-    <position class="actuatorPrismatic" name="boomMotor1" joint="prismatic1"/>
+    <position class="actuatorRotational" name="motor11" joint="revolver11" /> 
+    <position class="actuatorRotational" name="motor12" joint="revolver12" />
+    <position class="actuatorPrismatic" name="boomMotor1" joint="prismatic1" />
     <position class="actuatorRotational" name="motor21" joint="revolver21"/>
-    <position class="actuatorRotational" name="motor22" joint="revolver22"/>
-    <position class="actuatorPrismatic" name="boomMotor2" joint="prismatic2"/>
-    <position class="actuatorRotational" name="motor31" joint="revolver31"/>
-    <position class="actuatorRotational" name="motor32" joint="revolver32"/>
-    <position class="actuatorPrismatic" name="boomMotor3" joint="prismatic3"/>
-    <position class="actuatorRotational" name="motor41" joint="revolver41"/>
-    <position class="actuatorRotational" name="motor42" joint="revolver42"/>
-    <position class="actuatorPrismatic" name="boomMotor4" joint="prismatic4"/>
+    <position class="actuatorRotational" name="motor22" joint="revolver22" />
+    <position class="actuatorPrismatic" name="boomMotor2" joint="prismatic2" />
+    <position class="actuatorRotational" name="motor31" joint="revolver31" />
+    <position class="actuatorRotational" name="motor32" joint="revolver32" />
+    <position class="actuatorPrismatic" name="boomMotor3" joint="prismatic3" />
+    <position class="actuatorRotational" name="motor41" joint="revolver41" />
+    <position class="actuatorRotational" name="motor42" joint="revolver42" />
+    <position class="actuatorPrismatic" name="boomMotor4" joint="prismatic4" />
   </actuator>
   <sensor>
     <gyro site="imu" name="gyro"/>
