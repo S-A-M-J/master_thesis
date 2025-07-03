@@ -266,7 +266,7 @@ def save_mujoco_boxes(voxels, voxel_size, filename):
             x, y, z = position
             sx, sy, sz = size
              # Contype and conaffinity are set to 2 and 1 respectively to avoid collisions with other cave wall primitives
-            f.write(f'    <geom name="cave_wall_box_{i}" type="box" pos="{x} {y} {z}" size="{sx} {sy} {sz}" material="cave_wall" contype="2" conaffinity="1"/>\n')
+            f.write(f'    <geom name="cave_wall_box_{i}" type="box" pos="{x} {y} {z}" size="{sx} {sy} {sz}" material="cave_wall" contype="2" conaffinity="1" friction="5.0 0.01 0.001" solref="0.001 1" solimp="0.99 0.99 0.001"/>\n')
         
         f.write('</body>')
 

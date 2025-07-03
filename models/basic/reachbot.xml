@@ -34,7 +34,7 @@
       <tendon width="0.04" rgba="0.1 0.1 0.1 1"/>
     </default>
     <default class="foot">
-      <geom size="0.05" type="sphere" rgba="0.1 0.1 0.1 1" mass="0.344"/>
+      <geom size="0.05" type="sphere" rgba="0.1 0.1 0.1 1" mass="0.344" friction="5.0 0.01 0.001" solref="0.001 1" solimp="0.99 0.99 0.001"/>
     </default>
   </default>
 
