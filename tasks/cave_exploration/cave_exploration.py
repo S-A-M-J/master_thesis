@@ -60,7 +60,7 @@ def default_config() -> config_dict.ConfigDict:
       episode_length=10000,
       Kp_rot=25.0,
       Kd_rot=1.0,
-      Kp_pri=50.0,
+      Kp_pri=100.0,
       Kd_pri=20.0,
       action_repeat=1,
       action_scale=0.2,
@@ -113,7 +113,14 @@ def default_config() -> config_dict.ConfigDict:
           stickiness_force=50.0,  # Force applied when stickiness is activated
           min_activation_threshold=0.5,  # Threshold for activating stickiness
           deactivation_threshold=0.3,  # Threshold for deactivating stickiness (hysteresis)
-      )
+      ),
+      lidar_config=config_dict.create(
+          num_horizontal_rays=10,  # Number of horizontal rays
+          max_range=10.0,  # Maximum range of LIDAR
+          horizontal_angle_range=jp.pi * 2,  # Horizontal angle range in radians
+          num_vertical_rays=3,  # Number of vertical rays
+          vertical_angle_range=jp.pi / 6,  # Vertical angle range in radians
+      ),
   )
 
 
@@ -125,12 +132,6 @@ class CaveExplore(mjx_env.MjxEnv):
       model: ReachbotModelType = ReachbotModelType.BASIC,
       config: config_dict.ConfigDict = default_config(),
       config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
-      # LIDAR parameters
-      lidar_num_horizontal_rays: int = 3,
-      lidar_max_range: float = 10.0,
-      lidar_horizontal_angle_range: float = jp.pi * 2,
-      lidar_num_vertical_rays: int = 3,
-      lidar_vertical_angle_range: float = jp.pi / 6,
   ):
     # Replace default config with provided config and overrides
     self._config = config_dict.ConfigDict(config)
@@ -140,11 +141,11 @@ class CaveExplore(mjx_env.MjxEnv):
     self._model = model
     
     # LIDAR parameters
-    self._lidar_num_horizontal_rays = lidar_num_horizontal_rays
-    self._lidar_num_vertical_rays = lidar_num_vertical_rays
-    self._lidar_max_range = lidar_max_range
-    self._lidar_horizontal_angle_range = lidar_horizontal_angle_range
-    self._lidar_vertical_angle_range = lidar_vertical_angle_range
+    self._lidar_num_horizontal_rays = self._config.lidar_config.num_horizontal_rays
+    self._lidar_num_vertical_rays = self._config.lidar_config.num_vertical_rays
+    self._lidar_max_range = self._config.lidar_config.max_range
+    self._lidar_horizontal_angle_range = self._config.lidar_config.horizontal_angle_range
+    self._lidar_vertical_angle_range = self._config.lidar_config.vertical_angle_range
     
     # Select initial random environment
     self._select_random_env()
@@ -629,8 +630,8 @@ class CaveExplore(mjx_env.MjxEnv):
   
   def _get_termination(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
      qpos = data.qpos
-     out_of_bounds = (qpos[2] < -1) | (qpos[2] > 5) # Check if x, y, or z position is out of bounds
-     
+     out_of_bounds = (qpos[2] < -1) | (qpos[2] > 5) | (qpos[0] < -0.5)  # Check if x, y, or z position is out of bounds
+
      # No movement termination
      pos_history = info["pos_history"]
      oldest_pos = pos_history[0]
@@ -800,10 +801,10 @@ class CaveExplore(mjx_env.MjxEnv):
         #jax.debug.print("CaveExplore step: {qpos}", qpos=data.qpos)
         return {
             "distance_to_target": self._reward_dist_to_target(
-                data.qpos[0:3], info
+                data.qpos[0:3], jp.array(info["last_pos"]), jp.array(info["target_pos"])
             ),
             "vel_to_target": self._reward_vel_to_target(
-                data.qpos[0:3], jp.array(info["target_pos"]), info["last_pos"]
+                data.qpos[0:3], jp.array(info["target_pos"]), jp.array(info["last_pos"])
             ),
             "exploration_rate": self._reward_exploration_rate(data.qpos[0:3]),
             "lin_vel_z": self._cost_lin_vel_z(self.get_global_linvel(data)),
@@ -862,13 +863,14 @@ class CaveExplore(mjx_env.MjxEnv):
     distance_diff = last_dist - current_dist
     return jp.exp(distance_diff) - 1.0  # Exponential reward for change to target distance
   
-  def _reward_dist_to_target(self, qpos: jax.Array, info: Dict[str, Any]) -> jax.Array:
+  def _reward_dist_to_target(self, current_pos: jax.Array, last_pos: jax.Array, target_pos: jax.Array) -> jax.Array:
         # Reward for distance to target.
-        target_pos = jp.array(self._active_env["target_pos"])
-        dist = jp.linalg.norm(qpos - target_pos)
-        init_dist = info["init_dist_to_target"]
-        dist_diff = init_dist - dist  # Ensure non-negative distance difference
-        return dist_diff
+        current_dist = jp.linalg.norm(current_pos - target_pos)
+        last_dist = jp.linalg.norm(last_pos - target_pos)
+        dist_diff = last_dist - current_dist  # Ensure non-negative distance difference
+        exp_dist_reward = jp.clip(jp.exp(dist_diff) - 1.0, min=0.0, max=None)  # Exponential reward for distance change
+        linear_dist_reward = dist_diff  # Linear reward for distance change
+        return exp_dist_reward + linear_dist_reward  # Combine both rewards
   
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
     # Reward for exploration rate.

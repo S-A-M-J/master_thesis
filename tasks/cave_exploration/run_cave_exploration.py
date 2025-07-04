@@ -21,6 +21,11 @@ os.environ['XLA_FLAGS'] = xla_flags
 import jax
 from jax import numpy as jp
 
+from jax.lib import xla_bridge
+print(xla_bridge.get_backend().platform)
+print(xla_bridge.get_backend().device_count())
+print(xla_bridge.get_backend().devices())
+
 
 
 # This helps with nan values being returned from the model while costing some perf. See github @brax for more info
@@ -114,7 +119,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   
   env_cfg.sim_dt = 0.004
   env_cfg.action_scale = 1#  Scale the actions to make them more manageable
-  env_cfg.Kp_pri=50.0
+  env_cfg.Kp_pri=75.0
   env_cfg.Kd_pri=20.0
   env_cfg.Kp_rot=25.0
   env_cfg.Kd_rot=2.0
@@ -124,22 +129,22 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   env_cfg.reward_config.scales.orientation = -0.0      # Penalize not being upright
   env_cfg.reward_config.scales.lin_vel_z = -0.0        # Penalize vertical velocity
   env_cfg.reward_config.scales.ang_vel_xy = -0.00      # Penalize spinning
-  env_cfg.reward_config.scales.torques = -0.0001       # Encourage energy efficiency
+  env_cfg.reward_config.scales.torques = -0.00005       # Encourage energy efficiency
   env_cfg.reward_config.scales.action_rate = -0.0001       # Encourage smooth actions
-  #env_cfg.reward_config.scales.dof_pos_limits = -0.0     # Penalize hitting joint limits
-  env_cfg.reward_config.scales.energy = -0.0001     # Penalize exceeding joint velocity limits
+  env_cfg.reward_config.scales.dof_pos_limits = -0.5     # Penalize hitting joint limits
+  env_cfg.reward_config.scales.energy = -0.00001     # Penalize exceeding joint velocity limits
   env_cfg.reward_config.scales.feet_slip = -0.0     # Penalize exceeding joint velocity limits
 
   # Reduce the dominance of the target-based reward
-  env_cfg.reward_config.scales.distance_to_target = 10.0 # Reduced from 100.0
+  env_cfg.reward_config.scales.distance_to_target = 70.0 # Reduced from 100.0
 
   # Disable rewards that are not helping yet or are unimplemented
-  env_cfg.reward_config.scales.vel_to_target = 100.0       # Disable velocity to target for now
+  env_cfg.reward_config.scales.vel_to_target = 10.0       # Disable velocity to target for now
   env_cfg.reward_config.scales.exploration_rate = 0.0    # Disable unimplemented exploration reward
   
   # --- End of Suggested Changes ---
 
-  env = CaveExplore(config=env_cfg, lidar_num_horizontal_rays=10, lidar_max_range=15.0, lidar_horizontal_angle_range=jp.pi * 2, lidar_vertical_angle_range=jp.pi / 6) # Updated LIDAR params for 3D
+  env = CaveExplore(config=env_cfg) # Updated LIDAR params for 3D
 
   ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
   # Getting RL configuration parameters
@@ -353,7 +358,7 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   for _ in range(n_episodes):
     state = jit_reset(rng)
     rollout.append(state)
-    for i in range(1200):
+    for i in range(2000):
       act_rng, rng = jax.random.split(rng)
       ctrl, _ = jit_inference_fn(state.obs, act_rng)
       state = jit_step(state, ctrl)
@@ -389,7 +394,7 @@ if __name__ == '__main__':
   ppo_training_params = dict(ppo_params)
   
   # Modify params for faster training
-  ppo_training_params["num_timesteps"] = 10_000_000 # Reduce from 60000000
+  ppo_training_params["num_timesteps"] = 50_000_000 # Reduce from 60000000
   ppo_training_params["episode_length"] = 10000 # Max episode length
   ppo_training_params["num_envs"] = 4096 # Reduce from 2048
   ppo_training_params["batch_size"] = 512 # Number of samples randomly chosen from the rollout data for training

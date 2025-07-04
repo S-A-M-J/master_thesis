@@ -4,9 +4,9 @@ import os
 import sys
 
 # Add the project root to the Python path to resolve module imports
-#project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-#if project_root not in sys.path:
-#    sys.path.insert(0, project_root)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 import jax
 from etils import epath
@@ -36,7 +36,7 @@ from ml_collections import config_dict
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-relative_ckpt_path = "cave_exploration/logs/cave_exploration-2025-06-24_09-01-51"
+relative_ckpt_path = "cave_exploration/logs/cave_exploration-2025-07-04_15-05-14"
 
 ckpt_path = os.path.join(script_dir, relative_ckpt_path)
 
@@ -71,7 +71,7 @@ elif 'getup' in relative_ckpt_path:
     env = ReachbotGetup(config=env_cfg, task="flat_terrain_basic")
 elif 'cave_exploration' in relative_ckpt_path:
     from tasks.cave_exploration.cave_exploration import CaveExplore
-    env = CaveExplore(config=env_cfg, lidar_num_horizontal_rays=20, lidar_max_range=15.0, lidar_horizontal_angle_range=jp.pi * 2, lidar_vertical_angle_range=jp.pi / 6) # Updated LIDAR params for 3D
+    env = CaveExplore(config=env_cfg, lidar_num_horizontal_rays=10, lidar_max_range=15.0, lidar_horizontal_angle_range=jp.pi * 2, lidar_vertical_angle_range=jp.pi / 6) # Updated LIDAR params for 3D
     print(env.mj_model.actuator_ctrlrange)
     print(env.mj_model.actuator_ctrllimited)
     print(env.mjx_model.actuator_ctrlrange)
@@ -119,7 +119,7 @@ jit_inference_fn = jax.jit(make_inference_fn(params, deterministic=True))
 rng = jax.random.PRNGKey(3)
 rollout = []
 n_episodes = 1
-episode_length = 1200
+episode_length = 10000
 
 # Set the command to be executed by the agent
 x_vel = 0.2

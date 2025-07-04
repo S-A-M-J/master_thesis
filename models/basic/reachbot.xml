@@ -27,7 +27,7 @@
     <default class="actuatorPrismatic">
       <position forcerange="-476 476" inheritrange="1" kp="200"/>
       <default class="prismatic">
-        <joint type="slide" axis="0 1 0" armature="0.005" damping="20" frictionloss="1" limited="true" range="0 0.5"/>
+        <joint type="slide" axis="0 1 0" armature="0.005" damping="20" frictionloss="1" limited="true" range="0 1.7"/>
       </default>
     </default>
     <default class="armTendon">
