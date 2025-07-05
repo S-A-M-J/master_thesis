@@ -344,6 +344,11 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   params_path = os.path.join(logdir, 'params')
   model.save_params(params_path, params)
 
+  # Free up training memory before rendering to avoid memory issues
+  del train_fn, network_factory, writer
+  import gc
+  gc.collect()
+
   jit_reset = jax.jit(env.reset)
   jit_step = jax.jit(env.step)
   inference_fn = make_inference_fn(params, deterministic=True)
@@ -368,10 +373,11 @@ def trainModel(ppo_params_input:dict = None, on_sherlock:bool = False):
   frames = env.render(rollout[::render_every], camera='track_global', width=1920, height=1080)
   video_path = os.path.join(logdir, 'posttraining.mp4')
   fps = 1.0 / env.dt
-  ctx = mp.get_context("spawn")
-  p = ctx.Process(target=save_video, args=(frames, video_path, fps))
-  p.start()
-  p.join()
+  
+  # Save video directly like in render_policy.py (avoid multiprocessing memory issues)
+  import imageio
+  imageio.mimsave(video_path, frames, fps=fps)
+  print(f"Video saved to {video_path}")
 
   # Calculate run duration
   run_duration = str(times[-1] - times[0])
@@ -394,7 +400,7 @@ if __name__ == '__main__':
   ppo_training_params = dict(ppo_params)
   
   # Modify params for faster training
-  ppo_training_params["num_timesteps"] = 50_000_000 # Reduce from 60000000
+  ppo_training_params["num_timesteps"] = 10_000_000 # Reduce from 60000000
   ppo_training_params["episode_length"] = 10000 # Max episode length
   ppo_training_params["num_envs"] = 4096 # Reduce from 2048
   ppo_training_params["batch_size"] = 512 # Number of samples randomly chosen from the rollout data for training

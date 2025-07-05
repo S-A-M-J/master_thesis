@@ -81,8 +81,8 @@ def default_config() -> config_dict.ConfigDict:
             
             # Base movement rewards
             orientation=-0.2,           # Penalty scale for orientation deviation (based on upwards vector sensor). Default is -5.0
-            distance_to_target=10.0,     # Reward scale for distance to target
-            vel_to_target=100.0,          # Reward scale for velocity towards target. Default is 0.0
+            distance_to_target=5.0,     # Reward scale for distance to target (reduced from 10.0)
+            vel_to_target=10.0,          # Reward scale for velocity towards target (reduced from 100.0)
             exploration_rate=1.0,       # Reward scale for exploration rate
             lin_vel_z=-0.1,            # Penalty scale for linear velocity in z-direction
             ang_vel_xy=-0.1,           # Penalty scale for angular velocity in xy-plane
@@ -630,7 +630,17 @@ class CaveExplore(mjx_env.MjxEnv):
   
   def _get_termination(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
      qpos = data.qpos
-     out_of_bounds = (qpos[2] < -1) | (qpos[2] > 5) | (qpos[0] < -0.5)  # Check if x, y, or z position is out of bounds
+     
+     # Get voxel bounds from active environment with buffer
+     voxel_bounds = self._active_env["json_data"]["voxel_bounds"]
+     buffer = 0.1  # 0.1 meter buffer
+     
+     # Check if robot position is outside voxel bounds + buffer
+     out_of_bounds = (
+         (qpos[0] < voxel_bounds["x_min"] - buffer) | (qpos[0] > voxel_bounds["x_max"] + buffer) |
+         (qpos[1] < voxel_bounds["y_min"] - buffer) | (qpos[1] > voxel_bounds["y_max"] + buffer) |
+         (qpos[2] < voxel_bounds["z_min"] - buffer) | (qpos[2] > voxel_bounds["z_max"] + buffer)
+     )
 
      # No movement termination
      pos_history = info["pos_history"]
@@ -801,7 +811,7 @@ class CaveExplore(mjx_env.MjxEnv):
         #jax.debug.print("CaveExplore step: {qpos}", qpos=data.qpos)
         return {
             "distance_to_target": self._reward_dist_to_target(
-                data.qpos[0:3], jp.array(info["last_pos"]), jp.array(info["target_pos"])
+                data.qpos[0:3], jp.array(info["last_pos"]), jp.array(info["target_pos"]), jp.array(info["init_dist_to_target"])
             ),
             "vel_to_target": self._reward_vel_to_target(
                 data.qpos[0:3], jp.array(info["target_pos"]), jp.array(info["last_pos"])
@@ -857,25 +867,37 @@ class CaveExplore(mjx_env.MjxEnv):
     return done
   
   def _reward_vel_to_target(self, qpos: jax.Array, target_pos: jax.Array, last_pos: jax.Array) -> jax.Array:
-    # Reward for distance to target.
+    # Reward for velocity towards target
     last_dist = jp.linalg.norm(last_pos - target_pos)
     current_dist = jp.linalg.norm(qpos - target_pos)
     distance_diff = last_dist - current_dist
-    return jp.exp(distance_diff) - 1.0  # Exponential reward for change to target distance
+    clipped_dist = jp.clip(distance_diff, -1.0, 1.0)
+    return clipped_dist
+
   
-  def _reward_dist_to_target(self, current_pos: jax.Array, last_pos: jax.Array, target_pos: jax.Array) -> jax.Array:
-        # Reward for distance to target.
-        current_dist = jp.linalg.norm(current_pos - target_pos)
-        last_dist = jp.linalg.norm(last_pos - target_pos)
-        dist_diff = last_dist - current_dist  # Ensure non-negative distance difference
-        exp_dist_reward = jp.clip(jp.exp(dist_diff) - 1.0, min=0.0, max=None)  # Exponential reward for distance change
-        linear_dist_reward = dist_diff  # Linear reward for distance change
-        return exp_dist_reward + linear_dist_reward  # Combine both rewards
+  def _reward_dist_to_target(self, current_pos: jax.Array, last_pos: jax.Array, target_pos: jax.Array, max_dist: jax.Array) -> jax.Array:
+    # Reward for being closer to target with configurable shaping to reduce variance
+    current_dist = jp.linalg.norm(current_pos - target_pos)
+    last_dist = jp.linalg.norm(last_pos - target_pos)
+    dist_diff = last_dist - current_dist
+    
+    # Bounded linear reward with proximity bonus
+    clipped_reward = jp.clip(dist_diff, -1.0, 1.0)
+    
+    normalized_current_dist = jp.clip(current_dist / max_dist, 0.01, 1.0)
+    proximity_bonus = 0.1 * (1.0 / normalized_current_dist - 1.0)
+        
+    return clipped_reward + proximity_bonus
   
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
-    # Reward for exploration rate.
-    return 0 # Placeholder for exploration rate reward, can be modified later.
-    #return jp.linalg.norm(qpos - self._target_pos) / (self._cave_width * self._cave_height * self._cave_length)
+    # Reward for exploration - could be enhanced with visited positions tracking
+    # For now, return 0 but this could be expanded to reduce variance
+    # by encouraging more consistent exploration behavior
+    return 0.0
+    
+    # Future enhancement: track visited positions and reward novel areas
+    # This would require adding visited_positions to the info dict and 
+    # implementing a spatial hash or grid-based tracking system
 
   def _cost_joint_pos_limits(self, qpos: jax.Array) -> jax.Array:
     # Penalize joints if they cross soft limits.

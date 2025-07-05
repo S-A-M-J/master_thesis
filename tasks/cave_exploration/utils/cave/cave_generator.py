@@ -343,6 +343,36 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5):
         "voxel_count": len(voxels)
     }
     
+    # Calculate and save voxel bounds if voxels exist
+    if len(voxels) > 0:
+        # Convert voxel indices to world coordinates early for bounds calculation
+        world_voxels = voxels * voxel_size
+        
+        # Calculate bounds
+        voxel_bounds = {
+            "x_min": float(np.min(world_voxels[:, 0])),
+            "x_max": float(np.max(world_voxels[:, 0])),
+            "y_min": float(np.min(world_voxels[:, 1])),
+            "y_max": float(np.max(world_voxels[:, 1])),
+            "z_min": float(np.min(world_voxels[:, 2])),
+            "z_max": float(np.max(world_voxels[:, 2]))
+        }
+        
+        cave_params["voxel_bounds"] = voxel_bounds
+        print(f"Cave {cave_id} - Voxel bounds: x=[{voxel_bounds['x_min']:.2f}, {voxel_bounds['x_max']:.2f}], "
+              f"y=[{voxel_bounds['y_min']:.2f}, {voxel_bounds['y_max']:.2f}], "
+              f"z=[{voxel_bounds['z_min']:.2f}, {voxel_bounds['z_max']:.2f}]")
+    else:
+        cave_params["voxel_bounds"] = {
+            "x_min": 0.0,
+            "x_max": 0.0,
+            "y_min": 0.0,
+            "y_max": 0.0,
+            "z_min": 0.0,
+            "z_max": 0.0
+        }
+        print(f"Cave {cave_id} - No voxels found, setting bounds to zero")
+
     # Calculate target position based on voxel data
     if len(voxels) > 0:
 
@@ -362,10 +392,22 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5):
         voxels[:, 1] -= int(round(start_mid_y))
         voxels[:, 2] -= int(round(start_z))
 
-        # Convert voxel indices to world coordinates
+        # Update world coordinates after shifting
         world_voxels = voxels * voxel_size
         
-
+        # Update voxel bounds after shifting
+        cave_params["voxel_bounds"] = {
+            "x_min": float(np.min(world_voxels[:, 0])),
+            "x_max": float(np.max(world_voxels[:, 0])),
+            "y_min": float(np.min(world_voxels[:, 1])),
+            "y_max": float(np.max(world_voxels[:, 1])),
+            "z_min": float(np.min(world_voxels[:, 2])),
+            "z_max": float(np.max(world_voxels[:, 2]))
+        }
+        print(f"Cave {cave_id} - Updated voxel bounds after shifting: x=[{cave_params['voxel_bounds']['x_min']:.2f}, {cave_params['voxel_bounds']['x_max']:.2f}], "
+              f"y=[{cave_params['voxel_bounds']['y_min']:.2f}, {cave_params['voxel_bounds']['y_max']:.2f}], "
+              f"z=[{cave_params['voxel_bounds']['z_min']:.2f}, {cave_params['voxel_bounds']['z_max']:.2f}]")
+        
         # Find the voxel with maximum x value
         max_x = np.max(world_voxels[:, 0])
         max_x_voxels = world_voxels[world_voxels[:, 0] == max_x]
