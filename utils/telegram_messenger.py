@@ -3,7 +3,6 @@ import telegram
 import os
 from dotenv import load_dotenv
 import nest_asyncio
-import asyncio
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '../.env'))
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -22,4 +21,14 @@ async def send_telegram_message(task: str, duration: str, result: str):
         print(f"Failed to send telegram message: {e}")
 
 def send_message_sync(task: str, duration: str, result: str):
-    asyncio.run(send_telegram_message(task, duration, result))
+    try:
+        # Check if we're already in an event loop
+        loop = asyncio.get_running_loop()
+        # If we are, use nest_asyncio to allow nested event loops
+        nest_asyncio.apply()
+        asyncio.run(send_telegram_message(task, duration, result))
+    except RuntimeError:
+        # No running loop, safe to use asyncio.run
+        asyncio.run(send_telegram_message(task, duration, result))
+    except Exception as e:
+        print(f"Failed to send telegram message: {e}")

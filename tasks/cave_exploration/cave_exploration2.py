@@ -383,10 +383,6 @@ class CaveExplore(mjx_env.MjxEnv):
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
     metrics["swing_peak"] = jp.zeros(())
-    
-    # Initialize contact tracking metrics as float32 to match other metrics
-    metrics["contacts/robot_wall_contacts"] = jp.zeros((), dtype=jp.float32)
-    metrics["contacts/unique_pairs"] = jp.zeros((), dtype=jp.float32)
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -406,20 +402,6 @@ class CaveExplore(mjx_env.MjxEnv):
 
     # Handle contacts properly - in MJX, contacts is a struct with arrays
     contacts = state.data.contact
-    
-    # Track robot wall contacts with non-zero normal force
-    contact_stats = self._track_wall_contacts(contacts, state.data.ncon)
-    
-    # Print contact statistics only occasionally to avoid spam
-    should_print = (state.info["steps"] % 100 == 0)
-    jax.lax.cond(
-        should_print,
-        lambda: jax.debug.print("Step {step}: Robot-Wall Contacts: {num_contacts}, Unique Pairs: {unique_pairs}", 
-                               step=state.info["steps"],
-                               num_contacts=contact_stats["num_robot_wall_contacts"],
-                               unique_pairs=contact_stats["num_unique_pairs"]),
-        lambda: None
-    )
     
     # Check if there are any contacts first
     if state.data.ncon > 0:
@@ -494,10 +476,6 @@ class CaveExplore(mjx_env.MjxEnv):
     state.info["last_pos"] = data.qpos[0:3]
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
-
-    # Add contact statistics to metrics for tracking
-    state.metrics["contacts/robot_wall_contacts"] = contact_stats["num_robot_wall_contacts"]
-    state.metrics["contacts/unique_pairs"] = contact_stats["num_unique_pairs"]  
 
     done = done.astype(reward.dtype)
     state = state.replace(data=data, obs=obs, reward=reward, done=done)
@@ -675,9 +653,9 @@ class CaveExplore(mjx_env.MjxEnv):
      movement = jp.linalg.norm(qpos[0:3] - oldest_pos)
      
      # Only check for no movement after enough steps have passed
-     has_waited_long_ENOUGH = info["steps"] > self._no_movement_steps
+     has_waited_long_enough = info["steps"] > self._no_movement_steps
      is_not_moving = movement < self._no_movement_threshold
-     no_movement = is_not_moving & has_waited_long_ENOUGH
+     no_movement = is_not_moving & has_waited_long_enough
      
      # NaN detection termination
      has_nan = (jp.any(jp.isnan(qpos)) | 
@@ -1018,82 +996,4 @@ class CaveExplore(mjx_env.MjxEnv):
   @property
   def mjx_model(self) -> mjx.Model:
     return self._active_env["mjx_model"]
-
-  def _track_wall_contacts(self, contacts, ncon: int) -> Dict[str, jax.Array]:
-    """Track robot wall contacts and unique pairs in a JAX-compliant way.
-    
-    Args:
-        contacts: Contact data structure from MJX
-        ncon: Number of contacts
-        
-    Returns:
-        Dictionary containing contact statistics as float32 values
-    """
-    if ncon == 0:
-        return {
-            "num_robot_wall_contacts": jp.array(0.0, dtype=jp.float32),
-            "num_unique_pairs": jp.array(0.0, dtype=jp.float32),
-        }
-    
-    # Handle both contact field access patterns
-    if hasattr(contacts, 'geom'):
-        geom1_ids = contacts.geom[:ncon, 0]
-        geom2_ids = contacts.geom[:ncon, 1]
-    else:
-        geom1_ids = contacts.geom1[:ncon]
-        geom2_ids = contacts.geom2[:ncon]
-    
-    # Find robot geoms (anything not in floor_geom_ids)
-    is_robot1 = jp.isin(geom1_ids, self._boom_geom_ids)
-    is_robot2 = jp.isin(geom2_ids, self._boom_geom_ids)
-    is_wall1 = jp.isin(geom1_ids, self._floor_geom_ids)
-    is_wall2 = jp.isin(geom2_ids, self._floor_geom_ids)
-    
-    # Find robot-wall contacts: (robot1 & wall2) OR (robot2 & wall1)
-    robot_wall_mask = (is_robot1 & is_wall2) | (is_robot2 & is_wall1)
-    
-    num_robot_wall_contacts = jp.sum(robot_wall_mask.astype(jp.float32))
-    
-    # For unique pairs, create canonical pairs (smaller geom id first) and count unique combinations
-    valid_geom1 = jp.where(robot_wall_mask, geom1_ids, -1)
-    valid_geom2 = jp.where(robot_wall_mask, geom2_ids, -1)
-    pair_first = jp.minimum(valid_geom1, valid_geom2)
-    pair_second = jp.maximum(valid_geom1, valid_geom2)
-    
-    # Create a unique identifier for each pair by combining the two geom IDs
-    # Use a large multiplier to ensure no collisions between different pairs
-    max_geom_id = jp.max(jp.concatenate([pair_first, pair_second]))
-    multiplier = jp.maximum(max_geom_id + 1, 1000)  # Ensure sufficient separation
-    pair_ids = pair_first * multiplier + pair_second
-    
-    # Only consider valid pairs (where both geoms are non-negative)
-    valid_pairs_mask = (pair_first >= 0) & (pair_second >= 0)
-    valid_pair_ids = jp.where(valid_pairs_mask, pair_ids, -1)
-    
-    # Count unique pairs using a JAX-compatible approach that avoids boolean indexing
-    # Sort all pair IDs (including invalid ones marked as -1)
-    sorted_all_pairs = jp.sort(valid_pair_ids)
-    
-    # Count valid pairs (those >= 0)
-    num_valid = jp.sum((valid_pair_ids >= 0).astype(jp.int32))
-    
-    # For unique pair counting, we need to handle the case where we have valid pairs
-    # Create a mask for valid entries in the sorted array (valid pairs are at the end)
-    valid_mask_sorted = sorted_all_pairs >= 0
-    
-    # Create consecutive difference array for the entire sorted array
-    # Pad with a dummy value to make differences array same size
-    padded_sorted = jp.concatenate([jp.array([-2]), sorted_all_pairs])
-    differences = padded_sorted[1:] != padded_sorted[:-1]
-    
-    # Only count differences for valid pairs
-    valid_differences = differences & valid_mask_sorted
-    
-    # Sum the valid differences to get unique count
-    num_unique_pairs = jp.sum(valid_differences.astype(jp.float32))
-    
-    return {
-        "num_robot_wall_contacts": num_robot_wall_contacts,
-        "num_unique_pairs": num_unique_pairs,
-    }
 

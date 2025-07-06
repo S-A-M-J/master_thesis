@@ -6,8 +6,8 @@
 
   
   <custom>
-    <numeric data="500" name="max_contact_points"/>
-    <numeric data="200" name="max_geom_pairs"/>
+    <numeric data="64" name="max_contact_points"/>
+    <numeric data="64" name="max_geom_pairs"/>
   </custom>
 
   <include file="{REACHBOT_MODEL_PATH}"/>
