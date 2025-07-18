@@ -430,14 +430,58 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5):
         }
         
         print(f"Cave {cave_id} - Target position: x={max_x:.2f}, y={mid_y:.2f}, z={target_z:.2f}")
-    else:
-        exit("NO VOXELS FOUND")  # Exit if no voxels are found
-        print(f"Cave {cave_id} - Could not calculate target position (no voxels)")
-        cave_params["target_pos"] = {
-            "x": length,  # Default to end of tunnel
-            "y": 0.0,
-            "z": 1.0
-        }
+        
+        # Calculate starting positions for x steps 0 to 15
+        starting_positions = []
+        for x_step in range(170):  # 0 to 180. 0 to 18 meters in to the cave
+            # Convert x step to actual x coordinate in voxel space
+            x_coord = x_step
+            
+            # Find all voxels at this x coordinate
+            x_voxels = voxels[voxels[:, 0] == x_coord]
+            
+            if len(x_voxels) > 0:
+                # Find y range at this x
+                y_min = np.min(x_voxels[:, 1])
+                y_max = np.max(x_voxels[:, 1])
+                y_mid = (y_max + y_min) / 2
+                
+                # Find voxels at the middle y position (or closest to it)
+                closest_y = x_voxels[np.argmin(np.abs(x_voxels[:, 1] - y_mid)), 1]
+                mid_y_voxels = x_voxels[x_voxels[:, 1] == closest_y]
+                
+                # Find lowest z among these voxels
+                z_min = np.min(mid_y_voxels[:, 2])
+                
+                # Starting position is 2 voxel sizes above the lowest z
+                start_pos = {
+                    "x": float(x_coord * voxel_size),
+                    "y": float(closest_y * voxel_size),
+                    "z": float((z_min + 2) * voxel_size)
+                }
+                starting_positions.append(start_pos)
+            else:
+                # No voxels at this x coordinate, skip
+                starting_positions.append(None)
+        
+        # Save starting positions
+        cave_params["starting_pos"] = starting_positions
+        print(f"Cave {cave_id} - Generated {len([p for p in starting_positions if p is not None])} starting positions")
+        
+        # Block cave entrance by adding wall voxels at x = -1
+        entrance_voxels = voxels[voxels[:, 0] == 0]  # Get voxels at x = 0 (entrance)
+        if len(entrance_voxels) > 0:
+            # Create blocking wall at x = -1
+            wall_voxels = []
+            for entrance_voxel in entrance_voxels:
+                wall_voxel = entrance_voxel.copy()
+                wall_voxel[0] = -1  # Place wall at x = -1
+                wall_voxels.append(wall_voxel)
+            
+            # Add wall voxels to the main voxel array
+            if wall_voxels:
+                voxels = np.vstack((voxels, np.array(wall_voxels)))
+                print(f"Cave {cave_id} - Added {len(wall_voxels)} wall voxels to block entrance")
     
     # Convert voxels to a new mesh if voxel_grid is not None
     if voxel_grid is not None:

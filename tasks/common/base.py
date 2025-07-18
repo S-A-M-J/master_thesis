@@ -25,7 +25,7 @@ from ml_collections import config_dict
 import mujoco
 from mujoco import mjx
 from mujoco import MjModel  # type: ignore
-from models.model_loader import ReachbotModelType, get_model_path
+from models.model_loader import ReachbotModelType
 
 from mujoco_playground._src import mjx_env
 # Replace this with custom constants
@@ -45,8 +45,7 @@ class ReachbotEnv(mjx_env.MjxEnv):
 
   def __init__(
       self,
-      scene_xml: epath.Path,
-      model_type: ReachbotModelType, 
+      xml_path: epath.Path,
       config: config_dict.ConfigDict,
       config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
   ) -> None:

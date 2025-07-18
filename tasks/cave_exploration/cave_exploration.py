@@ -91,6 +91,7 @@ def default_config() -> config_dict.ConfigDict:
             dof_pos_limits=-1.0,        # Penalty scale for degree of freedom position limits. Default is -1.0
             pose=0.0,                   # Reward scale for maintaining a specific pose. Default is 0.5
             feet_slip=-0.01,           # Penalty scale for feet slipping
+            inactivity=-0.1,           # Penalty scale for being inactive (not moving)
             
             # Termination and stand-still penalties
             termination=-1.0,           # Penalty scale for termination conditions. Default is -1.0
@@ -140,6 +141,9 @@ class CaveExplore(mjx_env.MjxEnv):
     self._envs = CaveBatchLoader(self._config.cave_batch_size, self._config, model)
     self._model = model
     
+    # Public variable containing all loaded cave IDs
+    self.caveIds = [env["cave_id"] for env in self._envs.envs]
+    
     # LIDAR parameters
     self._lidar_num_horizontal_rays = self._config.lidar_config.num_horizontal_rays
     self._lidar_num_vertical_rays = self._config.lidar_config.num_vertical_rays
@@ -148,7 +152,7 @@ class CaveExplore(mjx_env.MjxEnv):
     self._lidar_vertical_angle_range = self._config.lidar_config.vertical_angle_range
     
     # Other paramters
-    self._max_ms = 0.5  # Maximum meters per second for velocity of robot
+    self._max_ms = 0.1  # Maximum meters per second for velocity of robot
     
     # Select initial random environment
     self._select_random_env()
@@ -252,14 +256,46 @@ class CaveExplore(mjx_env.MjxEnv):
     print(f"Found {len(boom_geom_ids)} boom end geoms")
     print(f"Found {len(floor_geom_ids)} floor/wall geoms")
 
+    # Pre-compute normalized local LIDAR ray directions
+    self._precompute_lidar_directions()
+
     print("CaveExplore task initialized with model:", self._model)
     print("CaveExplore task action space:", self.action_size)
-    print("CaveExplore task observation space:", self.observation_size)
 
     # Track maximum contacts for debugging
     self._max_contacts = 12
     
     self._max_dist_per_step = self._max_ms * self._config.sim_dt  # Maximum distance per step based on max speed
+
+  def _precompute_lidar_directions(self) -> None:
+    """Precompute normalized local LIDAR ray directions for efficiency and network observation."""
+    horizontal_angles = jp.linspace(-self._lidar_horizontal_angle_range / 2, 
+                                     self._lidar_horizontal_angle_range / 2, 
+                                     self._lidar_num_horizontal_rays)
+    
+    vertical_angles = jp.linspace(-self._lidar_vertical_angle_range / 2, 
+                                   self._lidar_vertical_angle_range / 2, 
+                                   self._lidar_num_vertical_rays)
+
+    # Precompute all ray directions
+    local_ray_dirs = []
+    for v_angle in vertical_angles:  # Elevation
+        for h_angle in horizontal_angles:  # Azimuth
+            local_ray_dir_x = jp.cos(v_angle) * jp.cos(h_angle)
+            local_ray_dir_y = jp.cos(v_angle) * jp.sin(h_angle)
+            local_ray_dir_z = jp.sin(v_angle)
+            local_ray_dir = jp.array([local_ray_dir_x, local_ray_dir_y, local_ray_dir_z])
+            
+            # Normalize the direction vector
+            norm = jp.linalg.norm(local_ray_dir)
+            norm = jp.where(norm == 0, 1e-6, norm)  # Avoid division by zero
+            local_ray_dir = local_ray_dir / norm
+            
+            local_ray_dirs.append(local_ray_dir)
+    
+    # Store as JAX array for efficient access
+    self._local_ray_directions = jp.stack(local_ray_dirs)
+    print(f"Precomputed {len(local_ray_dirs)} LIDAR ray directions")
 
   def _select_random_env(self) -> None:
     env_idx = random.randint(0, self._config.cave_batch_size - 1)
@@ -383,10 +419,6 @@ class CaveExplore(mjx_env.MjxEnv):
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
     metrics["swing_peak"] = jp.zeros(())
-    
-    # Initialize contact tracking metrics as float32 to match other metrics
-    metrics["contacts/robot_wall_contacts"] = jp.zeros((), dtype=jp.float32)
-    metrics["contacts/unique_pairs"] = jp.zeros((), dtype=jp.float32)
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
@@ -406,20 +438,6 @@ class CaveExplore(mjx_env.MjxEnv):
 
     # Handle contacts properly - in MJX, contacts is a struct with arrays
     contacts = state.data.contact
-    
-    # Track robot wall contacts with non-zero normal force
-    contact_stats = self._track_wall_contacts(contacts, state.data.ncon)
-    
-    # Print contact statistics only occasionally to avoid spam
-    should_print = (state.info["steps"] % 100 == 0)
-    jax.lax.cond(
-        should_print,
-        lambda: jax.debug.print("Step {step}: Robot-Wall Contacts: {num_contacts}, Unique Pairs: {unique_pairs}", 
-                               step=state.info["steps"],
-                               num_contacts=contact_stats["num_robot_wall_contacts"],
-                               unique_pairs=contact_stats["num_unique_pairs"]),
-        lambda: None
-    )
     
     # Check if there are any contacts first
     if state.data.ncon > 0:
@@ -487,17 +505,14 @@ class CaveExplore(mjx_env.MjxEnv):
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
     }
-    reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+    #reward = jp.clip(sum(rewards.values()) * self.dt, 0.0, 10000.0)
+    reward = sum(rewards.values()) * self.dt
 
     state.info["last_last_act"] = state.info["last_act"]
     state.info["last_act"] = action
     state.info["last_pos"] = data.qpos[0:3]
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
-
-    # Add contact statistics to metrics for tracking
-    state.metrics["contacts/robot_wall_contacts"] = contact_stats["num_robot_wall_contacts"]
-    state.metrics["contacts/unique_pairs"] = contact_stats["num_unique_pairs"]  
 
     done = done.astype(reward.dtype)
     state = state.replace(data=data, obs=obs, reward=reward, done=done)
@@ -668,6 +683,14 @@ class CaveExplore(mjx_env.MjxEnv):
          (qpos[1] < voxel_bounds["y_min"] - buffer) | (qpos[1] > voxel_bounds["y_max"] + buffer) |
          (qpos[2] < voxel_bounds["z_min"] - buffer) | (qpos[2] > voxel_bounds["z_max"] + buffer)
      )
+     
+     # Check if any feet positions are outside voxel bounds + buffer
+     feet_positions = data.site_xpos[self._feet_site_id]  # Shape: (n_feet, 3)
+     feet_out_of_bounds = jp.any(
+         (feet_positions[:, 0] < voxel_bounds["x_min"] - buffer) | (feet_positions[:, 0] > voxel_bounds["x_max"] + buffer) |
+         (feet_positions[:, 1] < voxel_bounds["y_min"] - buffer) | (feet_positions[:, 1] > voxel_bounds["y_max"] + buffer) |
+         (feet_positions[:, 2] < voxel_bounds["z_min"] - buffer) | (feet_positions[:, 2] > voxel_bounds["z_max"] + buffer)
+     )
 
      # No movement termination
      pos_history = info["pos_history"]
@@ -686,7 +709,7 @@ class CaveExplore(mjx_env.MjxEnv):
                 jp.any(jp.isinf(qpos)) |
                 jp.any(jp.isinf(data.qvel)))
 
-     return out_of_bounds | no_movement | has_nan # Include NaN in termination conditions
+     return out_of_bounds | feet_out_of_bounds | no_movement #| has_nan # Include feet bounds and NaN in termination conditions
 
 
   def _get_obs(
@@ -740,6 +763,9 @@ class CaveExplore(mjx_env.MjxEnv):
     # LIDAR data
     lidar_pos = self.get_lidar_pos(data)
     lidar_ranges = self._get_lidar_ranges(data, lidar_pos)
+    
+    # Flatten LIDAR directions for network input (each direction is 3D)
+    lidar_directions_flat = self._local_ray_directions.flatten()
 
     state = jp.hstack([
         noisy_linvel,  # 3
@@ -748,7 +774,8 @@ class CaveExplore(mjx_env.MjxEnv):
         noisy_joint_angles,  # 12
         noisy_joint_vel,  # 12
         info["last_act"],  # 12
-        lidar_ranges,  # LIDAR
+        lidar_ranges,  # LIDAR ranges
+        lidar_directions_flat,  # LIDAR ray directions (flattened)
     ])
 
     accelerometer = self.get_accelerometer(data)
@@ -781,47 +808,21 @@ class CaveExplore(mjx_env.MjxEnv):
     ranges = jp.full(total_lidar_rays, self._lidar_max_range, dtype=jp.float32)
     
     imu_quat = mjx_env.get_sensor_data(self._active_env["mj_model"], data, consts.ORIENTATION_SENSOR)
+    rot_mat = math.quat_to_mat(imu_quat)
 
-    horizontal_angles = jp.linspace(-self._lidar_horizontal_angle_range / 2, 
-                                     self._lidar_horizontal_angle_range / 2, 
-                                     self._lidar_num_horizontal_rays)
-    
-    vertical_angles = jp.linspace(-self._lidar_vertical_angle_range / 2, 
-                                   self._lidar_vertical_angle_range / 2, 
-                                   self._lidar_num_vertical_rays)
+    # Use precomputed local ray directions
+    for ray_idx in range(total_lidar_rays):
+        local_ray_dir = self._local_ray_directions[ray_idx]
+        
+        # Transform to world coordinates
+        world_ray_dir = rot_mat @ local_ray_dir
+        
+        hit_dist, hit_geom_id = mjx.ray(self.mjx_model, data, head_pos, world_ray_dir)
 
-    ray_idx = 0
-    for v_angle in vertical_angles:  # Elevation
-        for h_angle in horizontal_angles:  # Azimuth
-            # Calculate ray direction in head's local frame
-            # x = cos(elevation) * cos(azimuth)
-            # y = cos(elevation) * sin(azimuth)
-            # z = sin(elevation)
-            local_ray_dir_x = jp.cos(v_angle) * jp.cos(h_angle)
-            local_ray_dir_y = jp.cos(v_angle) * jp.sin(h_angle)
-            local_ray_dir_z = jp.sin(v_angle)
-            local_ray_dir = jp.array([local_ray_dir_x, local_ray_dir_y, local_ray_dir_z])
-            
-            rot_mat = math.quat_to_mat(imu_quat)
-            world_ray_dir = rot_mat @ local_ray_dir
-            
-            norm = jp.linalg.norm(world_ray_dir)
-            jp.where(norm == 0, 1e-6, norm)  # Avoid division by zero
-            world_ray_dir = world_ray_dir / norm
-
-            # Cast ray - use geomgroup to filter collision detection
-            # Create collision mask: only collide with cave walls (contype=2)
-            # Bit 1 corresponds to contype=2 (cave walls), exclude bit 0 (contype=1, robot parts)
-            geomgroup = [0, 1, 0, 0, 0, 0]  # Only enable group 1 for cave walls
-            
-            hit_dist, hit_geom_id = mjx.ray(self.mjx_model, data, head_pos, world_ray_dir, 
-                               geomgroup)
-
-            current_range = jp.where(hit_dist >= 0.0, 
-                                     jp.minimum(hit_dist, self._lidar_max_range), 
-                                     self._lidar_max_range)
-            ranges = ranges.at[ray_idx].set(current_range)
-            ray_idx += 1
+        current_range = jp.where(hit_dist >= 0.0, 
+                                 jp.minimum(hit_dist, self._lidar_max_range), 
+                                 self._lidar_max_range)
+        ranges = ranges.at[ray_idx].set(current_range)
             
     return ranges
 
@@ -855,6 +856,7 @@ class CaveExplore(mjx_env.MjxEnv):
             "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
             "feet_slip": self._cost_feet_slip(data, contact, info),
             "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
+            "inactivity": self._cost_inactivity(self.get_global_linvel(data)),
         }
 
   # Base-related rewards.
@@ -899,7 +901,7 @@ class CaveExplore(mjx_env.MjxEnv):
     current_dist = jp.linalg.norm(qpos - target_pos)
     dist_diff = last_dist - current_dist
     diff_norm = dist_diff / self._max_dist_per_step# Normalize by max distance per step to reduce variance
-    diff_norm = jp.clip(diff_norm, -1.0, 1.0)
+    diff_norm = jp.clip(diff_norm, 0.0, 1.0)
     return diff_norm
 
   
@@ -907,7 +909,9 @@ class CaveExplore(mjx_env.MjxEnv):
     # Reward for being closer to target with configurable shaping to reduce variance
     current_dist = jp.linalg.norm(current_pos - target_pos)
     dist_norm = (max_dist - current_dist) / max_dist
+    dist_norm = jp.clip(dist_norm, -0.1, 1.0)  # Ensure it's between 0 and 1
     return dist_norm
+  
   
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
     # Reward for exploration - could be enhanced with visited positions tracking
@@ -935,6 +939,12 @@ class CaveExplore(mjx_env.MjxEnv):
     vel_xy_norm_sq = jp.sum(jp.square(vel_xy), axis=-1)
     return jp.sum(vel_xy_norm_sq * contact)
 
+  def _cost_inactivity(self, global_linvel: jax.Array) -> jax.Array:
+    # Penalize inactivity - cost decreases from 1 (stationary) to 0 (max speed)
+    speed = jp.linalg.norm(global_linvel)
+    # Normalize speed by max speed and invert for cost (1 - speed/max_speed)
+    normalized_speed = jp.clip(speed / self._max_ms, 0.0, 1.0)
+    return 1.0 - normalized_speed
 
   # Perturbation
 
@@ -1018,82 +1028,4 @@ class CaveExplore(mjx_env.MjxEnv):
   @property
   def mjx_model(self) -> mjx.Model:
     return self._active_env["mjx_model"]
-
-  def _track_wall_contacts(self, contacts, ncon: int) -> Dict[str, jax.Array]:
-    """Track robot wall contacts and unique pairs in a JAX-compliant way.
-    
-    Args:
-        contacts: Contact data structure from MJX
-        ncon: Number of contacts
-        
-    Returns:
-        Dictionary containing contact statistics as float32 values
-    """
-    if ncon == 0:
-        return {
-            "num_robot_wall_contacts": jp.array(0.0, dtype=jp.float32),
-            "num_unique_pairs": jp.array(0.0, dtype=jp.float32),
-        }
-    
-    # Handle both contact field access patterns
-    if hasattr(contacts, 'geom'):
-        geom1_ids = contacts.geom[:ncon, 0]
-        geom2_ids = contacts.geom[:ncon, 1]
-    else:
-        geom1_ids = contacts.geom1[:ncon]
-        geom2_ids = contacts.geom2[:ncon]
-    
-    # Find robot geoms (anything not in floor_geom_ids)
-    is_robot1 = jp.isin(geom1_ids, self._boom_geom_ids)
-    is_robot2 = jp.isin(geom2_ids, self._boom_geom_ids)
-    is_wall1 = jp.isin(geom1_ids, self._floor_geom_ids)
-    is_wall2 = jp.isin(geom2_ids, self._floor_geom_ids)
-    
-    # Find robot-wall contacts: (robot1 & wall2) OR (robot2 & wall1)
-    robot_wall_mask = (is_robot1 & is_wall2) | (is_robot2 & is_wall1)
-    
-    num_robot_wall_contacts = jp.sum(robot_wall_mask.astype(jp.float32))
-    
-    # For unique pairs, create canonical pairs (smaller geom id first) and count unique combinations
-    valid_geom1 = jp.where(robot_wall_mask, geom1_ids, -1)
-    valid_geom2 = jp.where(robot_wall_mask, geom2_ids, -1)
-    pair_first = jp.minimum(valid_geom1, valid_geom2)
-    pair_second = jp.maximum(valid_geom1, valid_geom2)
-    
-    # Create a unique identifier for each pair by combining the two geom IDs
-    # Use a large multiplier to ensure no collisions between different pairs
-    max_geom_id = jp.max(jp.concatenate([pair_first, pair_second]))
-    multiplier = jp.maximum(max_geom_id + 1, 1000)  # Ensure sufficient separation
-    pair_ids = pair_first * multiplier + pair_second
-    
-    # Only consider valid pairs (where both geoms are non-negative)
-    valid_pairs_mask = (pair_first >= 0) & (pair_second >= 0)
-    valid_pair_ids = jp.where(valid_pairs_mask, pair_ids, -1)
-    
-    # Count unique pairs using a JAX-compatible approach that avoids boolean indexing
-    # Sort all pair IDs (including invalid ones marked as -1)
-    sorted_all_pairs = jp.sort(valid_pair_ids)
-    
-    # Count valid pairs (those >= 0)
-    num_valid = jp.sum((valid_pair_ids >= 0).astype(jp.int32))
-    
-    # For unique pair counting, we need to handle the case where we have valid pairs
-    # Create a mask for valid entries in the sorted array (valid pairs are at the end)
-    valid_mask_sorted = sorted_all_pairs >= 0
-    
-    # Create consecutive difference array for the entire sorted array
-    # Pad with a dummy value to make differences array same size
-    padded_sorted = jp.concatenate([jp.array([-2]), sorted_all_pairs])
-    differences = padded_sorted[1:] != padded_sorted[:-1]
-    
-    # Only count differences for valid pairs
-    valid_differences = differences & valid_mask_sorted
-    
-    # Sum the valid differences to get unique count
-    num_unique_pairs = jp.sum(valid_differences.astype(jp.float32))
-    
-    return {
-        "num_robot_wall_contacts": num_robot_wall_contacts,
-        "num_unique_pairs": num_unique_pairs,
-    }
 

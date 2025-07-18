@@ -90,16 +90,20 @@ class CaveBatchLoader:
                 target_pos = [tp.get("x", 0.0), tp.get("y", 0.0), tp.get("z", 0.0)]
             if "voxel_positions" in json_data:
                 voxel_positions = json_data["voxel_positions"]
+            if "starting_pos" in json_data:
+                starting_pos = json_data["starting_pos"]
+            cave_id = json_data["generation"]["cave_id"]
             np.set_printoptions(precision=3, suppress=True)
-            print("initial_qpos (cave_batch_loader):", initial_qpos)
             self.envs.append({
-                "cave_id": json_data.get("cave_id"),
+                "cave_id": cave_id,
                 "mj_model": mj_model,
                 "mjx_model": mjx_model,
                 "json_data": json_data,
                 "target_pos": target_pos,
                 "voxel_positions": voxel_positions,
                 "folder": folder,
-                "initial_qpos": initial_qpos
+                "initial_qpos": initial_qpos,
+                "starting_pos": starting_pos
             })
+            print(f"Loaded cave environment: {json_data.get('cave_id', 'unknown')} from {folder}")
 

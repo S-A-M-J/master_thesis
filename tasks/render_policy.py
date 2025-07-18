@@ -2,6 +2,7 @@
 import mujoco
 import os
 import sys
+import imageio
 
 # Add the project root to the Python path to resolve module imports
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -36,7 +37,7 @@ from ml_collections import config_dict
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-relative_ckpt_path = "cave_exploration/logs/cave_exploration-2025-07-04_18-52-36"
+relative_ckpt_path = "cave_exploration/logs/cave_exploration-2025-07-15_09-13-47"
 
 ckpt_path = os.path.join(script_dir, relative_ckpt_path)
 
@@ -118,50 +119,56 @@ jit_inference_fn = jax.jit(make_inference_fn(params, deterministic=True))
 # Reset the environment
 rng = jax.random.PRNGKey(3)
 rollout = []
-n_episodes = 1
-episode_length = 10000
+n_episodes = 3
+episode_length = 5000
 
-# Set the command to be executed by the agent
-x_vel = 0.2
-y_vel = 0.2
-yaw_vel = 0.0
-command = jp.array([x_vel, y_vel, yaw_vel])
 
 # Rollout policy and record simulation
-for _ in range(n_episodes):
+
+print(f"Running rollout for {n_episodes} episode(s) with {episode_length} steps each...")
+for episode in range(n_episodes):
+    episode_reward = 0.0
+    print(f"Episode {episode + 1}/{n_episodes}")
     state = jit_reset(rng)
-    state.info["command"] = command
+    rollout.append(state)
     for i in range(episode_length):
+        if i % 500 == 0:
+            print(f"  Step {i}/{episode_length}")
+            
         act_rng, rng = jax.random.split(rng)
         ctrl, _ = jit_inference_fn(state.obs, act_rng)
-
-        # Check for infinities right after the policy network runs
-        if jp.any(jp.isinf(ctrl)):
-            print(f"Infinity detected in 'ctrl' at step {i}. Aborting.")
+        
+        # Check for numerical issues
+        if jp.any(jp.isinf(ctrl)) or jp.any(jp.isnan(ctrl)):
+            print(f"Numerical issue detected in control at step {i}. Stopping rollout.")
             break
-
+            
         state = jit_step(state, ctrl)
 
-        # Check for infinities right after the environment step
-        if jp.any(jp.isinf(state.obs['state'])):
-            print(f"Infinity detected in 'state.obs' after step {i}. Aborting.")
+        # Accumulate reward for this episode
+        episode_reward += float(state.reward)
+        
+        if state.done:
+            print(f"Episode {episode + 1} ended at step {i} with reward: {episode_reward:.3f}")
             break
-
-
-        state.info["command"] = command
+            
         rollout.append(state)
 
-    
-    # If the inner loop broke, break the outer one too
-    if 'i' in locals() and i < episode_length - 1:
-        break
+    print(f"Rollout completed with {len(rollout)} states")
 
-    render_every = 1
-    width = 1920  # Full HD width (default is usually 640)
-    height = 1080  # Full HD height (default is usually 480)
+    # Render video
+    print("Rendering video...")
+    render_every = 1  # Render every frame
+    width = 1920      # Full HD width
+    height = 1080     # Full HD height
+
     frames = env.render(rollout[::render_every], camera='track_global', width=width, height=height)
-    video_path = os.path.join(ckpt_path, 'posttraining3.mp4')
+    print(f"Rendered {len(frames)} frames")
+
+    # Save video
+    video_path = os.path.join(relative_ckpt_path, f'posttraining_{episode_reward:.2f}.mp4')
     fps = 1.0 / env.dt
 
-import imageio
-imageio.mimsave(video_path, frames, fps=fps)
+    print(f"Saving video to {video_path} at {fps} FPS...")
+    imageio.mimsave(video_path, frames, fps=fps)
+    print(f"Video saved successfully to {video_path}")
