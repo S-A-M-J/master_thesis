@@ -17,7 +17,7 @@
 # ==============================================================================
 """Joystick task for Reachbot."""
 
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, Tuple
 
 import sys
 import os
@@ -54,7 +54,6 @@ def renormalize_quat(qpos):
 
 def default_config() -> config_dict.ConfigDict:
   return config_dict.create(
-      cave_batch_size=1,  # Number of caves to load in a batch
       ctrl_dt=0.02,
       sim_dt=0.004,
       episode_length=10000,
@@ -81,16 +80,13 @@ def default_config() -> config_dict.ConfigDict:
             
             # Base movement rewards
             orientation=-0.2,           # Penalty scale for orientation deviation (based on upwards vector sensor). Default is -5.0
-            distance_to_target=5.0,     # Reward scale for distance to target (reduced from 10.0)
-            vel_to_target=10.0,          # Reward scale for velocity towards target (reduced from 100.0)
+            distance_from_start=5.0,     # Reward scale for distance to target (reduced from 10.0)
+            track_lidar_direction=10.0,          # Reward scale for velocity towards target (reduced from 100.0)
+            stability=-0.1,          # Reward scale for stability (reduced from 10.0)
             exploration_rate=1.0,       # Reward scale for exploration rate
-            lin_vel_z=-0.1,            # Penalty scale for linear velocity in z-direction
-            ang_vel_xy=-0.1,           # Penalty scale for angular velocity in xy-plane
             
             # Other rewards
             dof_pos_limits=-1.0,        # Penalty scale for degree of freedom position limits. Default is -1.0
-            pose=0.0,                   # Reward scale for maintaining a specific pose. Default is 0.5
-            feet_slip=-0.01,           # Penalty scale for feet slipping
             inactivity=-0.1,           # Penalty scale for being inactive (not moving)
             
             # Termination and stand-still penalties
@@ -130,19 +126,85 @@ class CaveExplore(mjx_env.MjxEnv):
 
   def __init__(
       self,
-      model: ReachbotModelType = ReachbotModelType.BASIC,
       config: config_dict.ConfigDict = default_config(),
       config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
+      cave_batch_loader: Optional[Any] = None,
+      scene_type: str = "training",
+      scene_data: Optional[Dict[str, Any]] = None,
+      domain_randomization_enabled: bool = False,
   ):
     # Replace default config with provided config and overrides
     self._config = config_dict.ConfigDict(config)
     if config_overrides:
       self._config.update(config_overrides)
-    self._envs = CaveBatchLoader(self._config.cave_batch_size, self._config, model)
-    self._model = model
     
-    # Public variable containing all loaded cave IDs
-    self.caveIds = [env["cave_id"] for env in self._envs.envs]
+    # Store domain randomization setting
+    self._domain_randomization_enabled = domain_randomization_enabled
+    
+    # Get the scene data - either from cave_batch_loader or directly provided
+    if scene_data is not None:
+        # Use directly provided scene data
+        self._scene_data = scene_data
+        self._cave_batch_loader = None
+        self._scene_type = scene_type
+    elif cave_batch_loader is not None:
+        # Use cave_batch_loader to get scene data
+        self._cave_batch_loader = cave_batch_loader
+        self._scene_type = scene_type
+        self._scene_data = cave_batch_loader.get_scene_data(scene_type)
+    else:
+        raise ValueError("Either cave_batch_loader or scene_data must be provided")
+    
+    # Public variable containing all loaded cave IDs from the scene
+    self.caveIds = list(self._scene_data["caves"].keys())
+    # Convert to JAX array for JAX-compatible indexing
+    self._cave_ids_array = jp.array(self.caveIds)
+    
+    # Initialize cave parameters dictionary indexed by cave_id
+    self._cave_params = {}
+    for cave_id, cave_data in self._scene_data["caves"].items():
+        # Convert target_pos dict to list format for consistency
+        target_pos = cave_data["target_pos"]
+        if isinstance(target_pos, dict):
+            target_pos_list = [target_pos.get("x", 0.0), target_pos.get("y", 0.0), target_pos.get("z", 0.0)]
+        else:
+            target_pos_list = target_pos if target_pos else [0.0, 0.0, 0.0]
+            
+        # Convert voxel_bounds dict to list format for consistency
+        voxel_bounds = cave_data["voxel_bounds"]
+        if isinstance(voxel_bounds, dict):
+            voxel_bounds_list = [
+                voxel_bounds["x_min"], voxel_bounds["x_max"], 
+                voxel_bounds["y_min"], voxel_bounds["y_max"], 
+                voxel_bounds["z_min"], voxel_bounds["z_max"]
+            ]
+        else:
+            voxel_bounds_list = voxel_bounds
+            
+        self._cave_params[cave_id] = {
+            "box_count": cave_data["box_count"],
+            "starting_pos": cave_data["starting_pos"],
+            "target_pos": target_pos_list,
+            "voxel_bounds": voxel_bounds_list,
+            "voxel_positions": cave_data["voxel_positions"]
+        }
+    
+    # Get master cave info
+    self._master_cave_id = self._scene_data["master_cave_id"]
+    
+    # Initialize cave geom IDs dictionary for all boxes in the master cave
+    self._master_cave_geom_ids = []
+    self._current_cave_id = None
+    self._initialize_master_cave_geom_mapping()
+    
+    # Current environment parameters (will be set when selecting a cave)
+    self._current_env = {
+        "cave_id": None,
+        "target_pos": None,
+        "starting_pos": None,
+        "voxel_bounds": None,
+        "initial_qpos": None
+    }
     
     # LIDAR parameters
     self._lidar_num_horizontal_rays = self._config.lidar_config.num_horizontal_rays
@@ -154,8 +216,9 @@ class CaveExplore(mjx_env.MjxEnv):
     # Other paramters
     self._max_ms = 0.1  # Maximum meters per second for velocity of robot
     
-    # Select initial random environment
-    self._select_random_env()
+    # Prepare cave data arrays for domain randomization if enabled
+    if self._domain_randomization_enabled:
+        self._prepare_domain_randomization_data()
     
     # Call parent class __init__
     super().__init__(config, config_overrides)
@@ -163,57 +226,244 @@ class CaveExplore(mjx_env.MjxEnv):
     # Call _post_init to initialize model-dependent attributes
     self._post_init()
     
+  def get_environment_info(self):
+    """Get information about this environment instance."""
+    return {
+        "scene_type": self._scene_type,
+        "num_caves": len(self.caveIds),
+        "cave_ids": sorted(self.caveIds),
+        "master_cave_id": self._master_cave_id,
+        "has_cave_batch_loader": self._cave_batch_loader is not None,
+        "domain_randomization_enabled": self._domain_randomization_enabled
+    }
+
+  def _prepare_domain_randomization_data(self):
+    """Prepare cave data arrays for domain randomization."""
+    max_boxes = 7500  # Should match the value used in domain randomization setup
+    
+    num_caves = len(self.caveIds)
+    
+    # Initialize arrays
+    all_cave_positions = jp.zeros((num_caves, max_boxes, 3))
+    cave_box_counts = jp.zeros(num_caves, dtype=jp.int32)
+    
+    # Get all cave target positions and voxel bounds
+    all_target_positions = jp.zeros((num_caves, 3))
+    all_voxel_bounds = jp.zeros((num_caves, 6))  # x_min, x_max, y_min, y_max, z_min, z_max
+    
+    # Prepare starting positions arrays - pad to consistent length
+    max_starting_positions = 10  # Assume max 10 starting positions per cave
+    all_starting_pos_x = jp.zeros((num_caves, max_starting_positions))
+    all_starting_pos_y = jp.zeros((num_caves, max_starting_positions))
+    all_starting_pos_z = jp.zeros((num_caves, max_starting_positions))
+    starting_pos_counts = jp.zeros(num_caves, dtype=jp.int32)
+    
+    # Fill in cave data
+    for cave_idx, cave_id in enumerate(self.caveIds):
+        cave_data = self._cave_params[cave_id]
+        
+        # Voxel positions
+        voxel_positions = cave_data["voxel_positions"]
+        num_boxes = min(len(voxel_positions), max_boxes)
+        cave_box_counts = cave_box_counts.at[cave_idx].set(num_boxes)
+        
+        if num_boxes > 0:
+            # Convert voxel positions to array format expected by domain randomization
+            positions_list = []
+            for pos in voxel_positions[:num_boxes]:
+                if isinstance(pos, dict):
+                    positions_list.append([pos["x"], pos["y"], pos["z"]])
+                else:
+                    positions_list.append(pos)
+            positions_array = jp.array(positions_list)
+            all_cave_positions = all_cave_positions.at[cave_idx, :num_boxes].set(positions_array)
+        
+        # Target positions
+        target_pos = jp.array(cave_data["target_pos"])
+        all_target_positions = all_target_positions.at[cave_idx].set(target_pos)
+        
+        # Voxel bounds
+        voxel_bounds = jp.array(cave_data["voxel_bounds"])
+        all_voxel_bounds = all_voxel_bounds.at[cave_idx].set(voxel_bounds)
+        
+        # Starting positions
+        starting_pos = cave_data["starting_pos"]
+        valid_starting_pos = [pos for pos in starting_pos if pos is not None]
+        num_starting = min(len(valid_starting_pos), max_starting_positions)
+        starting_pos_counts = starting_pos_counts.at[cave_idx].set(num_starting)
+        
+        for i in range(num_starting):
+            pos = valid_starting_pos[i]
+            all_starting_pos_x = all_starting_pos_x.at[cave_idx, i].set(pos["x"])
+            all_starting_pos_y = all_starting_pos_y.at[cave_idx, i].set(pos["y"])
+            all_starting_pos_z = all_starting_pos_z.at[cave_idx, i].set(pos["z"])
+    
+    # Store the prepared arrays
+    self._domain_randomization_data = {
+        'all_cave_positions': all_cave_positions,
+        'cave_box_counts': cave_box_counts,
+        'all_target_positions': all_target_positions,
+        'all_voxel_bounds': all_voxel_bounds,
+        'all_starting_pos_x': all_starting_pos_x,
+        'all_starting_pos_y': all_starting_pos_y,
+        'all_starting_pos_z': all_starting_pos_z,
+        'starting_pos_counts': starting_pos_counts,
+        'cave_ids_array': self._cave_ids_array,
+    }
+
+  def get_current_cave_data_from_randomization(self, cave_idx: jax.Array) -> Dict[str, jax.Array]:
+    """Get cave data for the given cave index from domain randomization arrays."""
+    if not self._domain_randomization_enabled:
+        raise ValueError("Domain randomization is not enabled")
+    
+    dr_data = self._domain_randomization_data
+    
+    return {
+        'starting_pos_x': dr_data['all_starting_pos_x'][cave_idx],
+        'starting_pos_y': dr_data['all_starting_pos_y'][cave_idx],
+        'starting_pos_z': dr_data['all_starting_pos_z'][cave_idx],
+        'target_pos': dr_data['all_target_positions'][cave_idx],
+        'starting_pos_length': dr_data['starting_pos_counts'][cave_idx],
+        'cave_id': dr_data['cave_ids_array'][cave_idx],
+        'voxel_bounds': dr_data['all_voxel_bounds'][cave_idx]
+    }
+    
+
+  @property
+  def mjx_model(self):
+    """Return the mjx_model from the scene data."""
+    return self._scene_data["mjx_model"]
+
+  def _initialize_master_cave_geom_mapping(self):
+    """Initialize mapping of geom IDs for the master cave boxes."""
+    mj_model = self._scene_data["mj_model"]
+    
+    # Find all geoms that belong to the master cave (they should be named with master cave pattern)
+    for i in range(mj_model.ngeom):
+        geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, i)
+        if geom_name and geom_name.startswith(f"cave_wall_box_{self._master_cave_id}_"):
+            self._master_cave_geom_ids.append(i)
+    
+    # Convert to JAX array for efficiency
+    self._master_cave_geom_ids = jp.array(self._master_cave_geom_ids)
+    
+    print(f"Initialized {len(self._master_cave_geom_ids)} geoms for master cave {self._master_cave_id}")
+
+  def _reposition_boxes_for_cave(self, cave_id: int):
+    """Reposition master cave boxes to match the positions of the selected cave."""
+    mj_model = self._scene_data["mj_model"]
+    cave_data = self._cave_params[cave_id]
+    voxel_positions = cave_data["voxel_positions"]
+    
+    num_cave_boxes = len(voxel_positions)
+    num_master_boxes = len(self._master_cave_geom_ids)
+    
+    print(f"Repositioning {num_master_boxes} master boxes for cave {cave_id} with {num_cave_boxes} boxes")
+    
+    # Reposition boxes to match the cave
+    for i in range(num_master_boxes):
+        geom_id = self._master_cave_geom_ids[i]
+        
+        if i < num_cave_boxes:
+            # Position this box at the cave's voxel position
+            pos = voxel_positions[i]
+            mj_model.geom_pos[geom_id, 0] = pos["x"]
+            mj_model.geom_pos[geom_id, 1] = pos["y"]
+            mj_model.geom_pos[geom_id, 2] = pos["z"]
+        else:
+            # Move extra boxes out of the way (below z=-1000)
+            mj_model.geom_pos[geom_id, 0] = 0.0
+            mj_model.geom_pos[geom_id, 1] = 0.0
+            mj_model.geom_pos[geom_id, 2] = -1000.0
+    
+    # Update the mjx model with the new geom positions
+    self._scene_data["mjx_model"] = mjx.put_model(mj_model)
+    
+    print(f"Repositioned boxes for cave {cave_id}")
+
+  def select_cave_environment(self, cave_id: int):
+    """Select a specific cave environment by repositioning boxes."""
+    if cave_id not in self._cave_params:
+        raise ValueError(f"Cave ID {cave_id} not found in available caves: {list(self._cave_params.keys())}")
+    
+    # Reposition boxes to match the selected cave
+    self._reposition_boxes_for_cave(cave_id)
+    
+    # Update current environment parameters
+    cave_data = self._cave_params[cave_id]
+    self._current_cave_id = cave_id
+    self._current_env.update({
+        "cave_id": cave_id,
+        "target_pos": cave_data["target_pos"],
+        "starting_pos": cave_data["starting_pos"], 
+        "voxel_bounds": cave_data["voxel_bounds"],
+    })
+    
+    # Set initial position from starting positions
+    starting_positions = cave_data["starting_pos"]
+    if starting_positions and len(starting_positions) > 0:
+        # Use first valid starting position
+        first_pos = None
+        for pos in starting_positions:
+            if pos is not None:
+                first_pos = [pos["x"], pos["y"], pos["z"]]
+                break
+        if first_pos is None:
+            first_pos = [0.0, 0.0, 0.0]  # Fallback
+        self._current_env["initial_qpos"] = jp.array(first_pos)
+    else:
+        self._current_env["initial_qpos"] = jp.array([0.0, 0.0, 0.0])
+    
+    print(f"Selected cave environment {cave_id}")
+    print(f"Target position: {self._current_env['target_pos']}")
+    print(f"Number of starting positions: {len([p for p in self._current_env['starting_pos'] if p is not None])}")
+    
+    return self._current_env
+    
 
   def _post_init(self) -> None:
-    self._init_q = jp.array(self._active_env["mj_model"].keyframe("home").qpos)
-    self._default_pose = jp.array(self._active_env["mj_model"].keyframe("home").qpos[7:])
+    self._init_q = jp.array(self._scene_data["mj_model"].keyframe("home").qpos)
+    self._default_pose = jp.array(self._scene_data["mj_model"].keyframe("home").qpos[7:])
 
     # Note: First joint is freejoint.
-    self._lowers, self._uppers = self._active_env["mj_model"].jnt_range[1:].T
+    self._lowers, self._uppers = self._scene_data["mj_model"].jnt_range[1:].T
     self._soft_lowers = self._lowers * self._config.soft_joint_pos_limit_factor
     self._soft_uppers = self._uppers * self._config.soft_joint_pos_limit_factor
 
-    self._torso_body_id = self._active_env["mj_model"].body(consts.ROOT_BODY).id
-    self._torso_mass = self._active_env["mj_model"].body_subtreemass[self._torso_body_id]
+    self._torso_body_id = self._scene_data["mj_model"].body(consts.ROOT_BODY).id
+    self._torso_mass = self._scene_data["mj_model"].body_subtreemass[self._torso_body_id]
 
     self._no_movement_duration = 5.0  # seconds
     self._no_movement_threshold = 0.1  # meters
     self._no_movement_steps = jp.array(self._no_movement_duration / self.sim_dt, dtype=jp.int32)
 
     self._feet_site_id = np.array(
-        [self._active_env["mj_model"].site(name).id for name in consts.FEET_SITES]
+        [self._scene_data["mj_model"].site(name).id for name in consts.FEET_SITES]
     )
-    # Collect all geoms whose names start with "cave_wall" as floor geoms
-    self._floor_geom_ids = np.array([
-      i for i in range(self._active_env["mj_model"].ngeom)
-      if mujoco.mj_id2name(self._active_env["mj_model"], mujoco.mjtObj.mjOBJ_GEOM, i).startswith("cave_wall")
+    # Collect all geoms whose names start with "cave_wall_box" as cave geoms
+    self._cave_geom_ids = np.array([
+      i for i in range(self._scene_data["mj_model"].ngeom)
+      if mujoco.mj_id2name(self._scene_data["mj_model"], mujoco.mjtObj.mjOBJ_GEOM, i).startswith("cave_wall_box")
     ])
-    print("Floor boxes detected:", len(self._floor_geom_ids))
+    print("Cave boxes detected:", len(self._cave_geom_ids))
     self._feet_geom_id = np.array(
-        [self._active_env["mj_model"].geom(name).id for name in consts.FEET_GEOMS]
+        [self._scene_data["mj_model"].geom(name).id for name in consts.FEET_GEOMS]
     )
 
     foot_linvel_sensor_adr = []
     for site in consts.FEET_SITES:
-      sensor_id = self._active_env["mj_model"].sensor(f"{site}_global_linvel").id
-      sensor_adr = self._active_env["mj_model"].sensor_adr[sensor_id]
-      sensor_dim = self._active_env["mj_model"].sensor_dim[sensor_id]
+      sensor_id = self._scene_data["mj_model"].sensor(f"{site}_global_linvel").id
+      sensor_adr = self._scene_data["mj_model"].sensor_adr[sensor_id]
+      sensor_dim = self._scene_data["mj_model"].sensor_dim[sensor_id]
       foot_linvel_sensor_adr.append(
           list(range(sensor_adr, sensor_adr + sensor_dim))
       )
     self._foot_linvel_sensor_adr = jp.array(foot_linvel_sensor_adr)
 
     # Initialize IMU site ID which is needed for get_gravity method
-    self._imu_site_id = self._active_env["mj_model"].site("imu").id
+    self._imu_site_id = self._scene_data["mj_model"].site("imu").id
 
-    # Pre-compute boom geom mappings for JAX compatibility and efficient contact filtering
-    # Optimizations implemented:
-    # 1. Use jp.isin() instead of individual binary searches for vectorized lookups
-    # 2. Sort arrays once during initialization for efficient operations
-    # 3. Minimize array operations and intermediate allocations
-    # 4. Early exit conditions to avoid unnecessary computations
-    # 5. Vectorized force calculations instead of per-contact processing
-    mj_model = self._active_env["mj_model"]
+    mj_model = self._scene_data["mj_model"]
     
     # Find all boom end geoms and create JAX-compatible arrays
     boom_geom_ids = []
@@ -250,27 +500,23 @@ class CaveExplore(mjx_env.MjxEnv):
         geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, i)
         if geom_name and ("cave_wall" in geom_name or "floor" in geom_name):
             floor_geom_ids.append(i)
-    
-    self._floor_geom_ids = jp.array(sorted(floor_geom_ids)) if floor_geom_ids else jp.array([])
-    
+
+    self._cave_geom_ids = jp.array(sorted(floor_geom_ids)) if floor_geom_ids else jp.array([])
+
     print(f"Found {len(boom_geom_ids)} boom end geoms")
     print(f"Found {len(floor_geom_ids)} floor/wall geoms")
 
     # Pre-compute normalized local LIDAR ray directions
     self._precompute_lidar_directions()
 
-    print("CaveExplore task initialized with model:", self._model)
     print("CaveExplore task action space:", self.action_size)
 
-    # Track maximum contacts for debugging
-    self._max_contacts = 12
-    
     self._max_dist_per_step = self._max_ms * self._config.sim_dt  # Maximum distance per step based on max speed
 
   def _precompute_lidar_directions(self) -> None:
     """Precompute normalized local LIDAR ray directions for efficiency and network observation."""
-    horizontal_angles = jp.linspace(-self._lidar_horizontal_angle_range / 2, 
-                                     self._lidar_horizontal_angle_range / 2, 
+    horizontal_angles = jp.linspace(-self._lidar_horizontal_angle_range / 2,
+                                     self._lidar_horizontal_angle_range / 2,
                                      self._lidar_num_horizontal_rays)
     
     vertical_angles = jp.linspace(-self._lidar_vertical_angle_range / 2, 
@@ -297,45 +543,194 @@ class CaveExplore(mjx_env.MjxEnv):
     self._local_ray_directions = jp.stack(local_ray_dirs)
     print(f"Precomputed {len(local_ray_dirs)} LIDAR ray directions")
 
-  def _select_random_env(self) -> None:
-    env_idx = random.randint(0, self._config.cave_batch_size - 1)
-    self._active_env = self._envs.envs[env_idx]
+  def _select_random_env(self, rng: jax.Array) -> Tuple[jax.Array, Dict[str, jax.Array]]:
+    """Select cave index for this reset (JAX-compatible)."""
+    if self._domain_randomization_enabled:
+        # Use domain randomization data
+        self._rng, key = jax.random.split(rng)
+        num_caves = len(self.caveIds)
+        cave_idx = jax.random.randint(key, (), 0, num_caves)
+        env_data_jax = self.get_current_cave_data_from_randomization(cave_idx)
+        return cave_idx, env_data_jax
+    else:
+        # Original behavior for manual cave selection
+        self._rng, key = jax.random.split(rng)
+        num_caves = len(self.caveIds)
+        cave_idx = jax.random.randint(key, (), 0, num_caves)
+        cave_id = self._cave_ids_array[cave_idx]
+        
+        # Get cave data for the selected cave
+        # We need to use the cave_idx to index into our data structures
+        # Since we can't use cave_id (a traced value) as a dictionary key,
+        # we'll prepare all cave data in arrays and index by cave_idx
+        
+        # Convert cave parameters to arrays indexed by cave order
+        starting_pos_arrays = []
+        target_pos_arrays = []
+        voxel_bounds_arrays = []
+        
+        for cave_id_val in self.caveIds:
+            cave_data = self._cave_params[cave_id_val]
+            
+            # Starting positions - pad to same length
+            starting_pos = cave_data["starting_pos"]
+            max_positions = 10  # Assume max 10 starting positions per cave
+            
+            start_x = [pos["x"] if pos is not None else 0.0 for pos in starting_pos] + [0.0] * (max_positions - len(starting_pos))
+            start_y = [pos["y"] if pos is not None else 0.0 for pos in starting_pos] + [0.0] * (max_positions - len(starting_pos))
+            start_z = [pos["z"] if pos is not None else 0.0 for pos in starting_pos] + [0.0] * (max_positions - len(starting_pos))
+            valid_count = len([p for p in starting_pos if p is not None])
+            
+            starting_pos_arrays.append({
+                'x': jp.array(start_x[:max_positions]),
+                'y': jp.array(start_y[:max_positions]), 
+                'z': jp.array(start_z[:max_positions]),
+                'count': jp.array(valid_count)
+            })
+            
+            # Target position - should already be in list format
+            target_pos = cave_data["target_pos"] if cave_data["target_pos"] else [0.0, 0.0, 0.0]
+            target_pos_arrays.append(jp.array(target_pos))
+            
+            # Voxel bounds - should already be in list format
+            voxel_bounds = cave_data["voxel_bounds"] if cave_data["voxel_bounds"] else [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            voxel_bounds_arrays.append(jp.array(voxel_bounds))
+        
+        # Stack into arrays
+        starting_x_stack = jp.stack([sp['x'] for sp in starting_pos_arrays])
+        starting_y_stack = jp.stack([sp['y'] for sp in starting_pos_arrays])
+        starting_z_stack = jp.stack([sp['z'] for sp in starting_pos_arrays])
+        starting_counts = jp.stack([sp['count'] for sp in starting_pos_arrays])
+        target_stack = jp.stack(target_pos_arrays)
+        voxel_bounds_stack = jp.stack(voxel_bounds_arrays)
+        
+        # Index by cave_idx
+        env_data_jax = {
+            'starting_pos_x': starting_x_stack[cave_idx],
+            'starting_pos_y': starting_y_stack[cave_idx],
+            'starting_pos_z': starting_z_stack[cave_idx],
+            'target_pos': target_stack[cave_idx],
+            'starting_pos_length': starting_counts[cave_idx],
+            'cave_id': cave_id,
+            'voxel_bounds': voxel_bounds_stack[cave_idx]
+        }
+        
+        return cave_idx, env_data_jax
+
+  def get_current_cave_data_from_state(self, state: mjx_env.State) -> Dict[str, Any]:
+    """Get current cave data from the environment state.
+    
+    This method can be used to retrieve cave information after domain randomization
+    has been applied during training.
+    
+    Args:
+        state: The current environment state
+        
+    Returns:
+        Dictionary containing current cave information
+    """
+    info = state.info
+    
+    if self._domain_randomization_enabled:
+        cave_idx = info["cave_idx"]
+        # Convert JAX arrays back to Python types for easier handling
+        cave_data = {
+            "cave_id": int(info["cave_id"]),
+            "cave_idx": int(cave_idx),
+            "target_pos": [float(x) for x in info["target_pos"]],
+            "voxel_bounds": [float(x) for x in info["voxel_bounds"]],
+            "init_pos": [float(x) for x in info["init_pos"]],
+            "domain_randomization_enabled": bool(info["domain_randomization_enabled"])
+        }
+    else:
+        # For manual cave selection
+        cave_data = {
+            "cave_id": int(info["cave_id"]) if "cave_id" in info else self._current_cave_id,
+            "cave_idx": int(info.get("cave_idx", 0)),
+            "target_pos": [float(x) for x in info["target_pos"]],
+            "voxel_bounds": [float(x) for x in info["voxel_bounds"]],
+            "init_pos": [float(x) for x in info["init_pos"]],
+            "domain_randomization_enabled": False
+        }
+    
+    return cave_data
+
+  def get_domain_randomization_info(self) -> Dict[str, Any]:
+    """Get information about domain randomization setup.
+    
+    Returns:
+        Dictionary containing domain randomization information
+    """
+    if not self._domain_randomization_enabled:
+        return {
+            "enabled": False,
+            "num_caves": len(self.caveIds),
+            "cave_ids": self.caveIds
+        }
+    
+    dr_data = self._domain_randomization_data
+    return {
+        "enabled": True,
+        "num_caves": len(self.caveIds),
+        "cave_ids": self.caveIds,
+        "max_boxes": dr_data['all_cave_positions'].shape[1],
+        "cave_data_shape": {
+            "all_cave_positions": dr_data['all_cave_positions'].shape,
+            "all_target_positions": dr_data['all_target_positions'].shape,
+            "all_voxel_bounds": dr_data['all_voxel_bounds'].shape,
+            "starting_pos_counts": dr_data['starting_pos_counts'].shape
+        }
+    }
+
+  def set_training_mode(self, training: bool = True):
+    """Switch between training and evaluation scenes - deprecated in new design."""
+    print("Warning: set_training_mode is deprecated. Use separate training and eval environment instances.")
+
+  @property
+  def current_mjx_model(self):
+    """Return the mjx_model for the currently selected environment."""
+    return self.mjx_model
+
+  @property  
+  def current_mj_model(self):
+    """Return the mj_model for the currently active cave environment."""
+    return self._scene_data["mj_model"]
 
   def get_upvector(self, data: mjx.Data) -> jax.Array:
-    return mjx_env.get_sensor_data(self._active_env["mj_model"], data, consts.UPVECTOR_SENSOR)
+    return mjx_env.get_sensor_data(self.current_mj_model, data, consts.UPVECTOR_SENSOR)
 
   def get_gravity(self, data: mjx.Data) -> jax.Array:
     return data.site_xmat[self._imu_site_id].T @ jp.array([0, 0, -1])
 
   def get_global_linvel(self, data: mjx.Data) -> jax.Array:
     return mjx_env.get_sensor_data(
-        self._active_env["mj_model"], data, consts.GLOBAL_LINVEL_SENSOR
+        self.current_mj_model, data, consts.GLOBAL_LINVEL_SENSOR
     )
 
   def get_global_angvel(self, data: mjx.Data) -> jax.Array:
     return mjx_env.get_sensor_data(
-        self._active_env["mj_model"], data, consts.GLOBAL_ANGVEL_SENSOR
+        self.current_mj_model, data, consts.GLOBAL_ANGVEL_SENSOR
     )
 
   def get_local_linvel(self, data: mjx.Data) -> jax.Array:
     return mjx_env.get_sensor_data(
-        self._active_env["mj_model"], data, consts.LOCAL_LINVEL_SENSOR
+        self.current_mj_model, data, consts.LOCAL_LINVEL_SENSOR
     )
 
   def get_accelerometer(self, data: mjx.Data) -> jax.Array:
     return mjx_env.get_sensor_data(
-        self._active_env["mj_model"], data, consts.ACCELEROMETER_SENSOR
+        self.current_mj_model, data, consts.ACCELEROMETER_SENSOR
     )
 
   def get_gyro(self, data: mjx.Data) -> jax.Array:
-    return mjx_env.get_sensor_data(self._active_env["mj_model"], data, consts.GYRO_SENSOR)
+    return mjx_env.get_sensor_data(self.current_mj_model, data, consts.GYRO_SENSOR)
 
   def get_lidar_pos(self, data: mjx.Data) -> jax.Array: # Added for LIDAR
-    return mjx_env.get_sensor_data(self._active_env["mj_model"], data, consts.HEAD_POS_SENSOR) # Added for LIDAR
+    return mjx_env.get_sensor_data(self.current_mj_model, data, consts.HEAD_POS_SENSOR) # Added for LIDAR
 
   def get_feet_pos(self, data: mjx.Data) -> jax.Array:
     return jp.vstack([
-        mjx_env.get_sensor_data(self._active_env["mj_model"], data, sensor_name)
+        mjx_env.get_sensor_data(self.current_mj_model, data, sensor_name)
         for sensor_name in consts.FEET_POS_SENSOR
     ])
 
@@ -343,12 +738,63 @@ class CaveExplore(mjx_env.MjxEnv):
     """Convert joint angles to control input format"""
     return qpos[7:7+self.mjx_model.nu]
     
-  def reset(self, rng: jax.Array) -> mjx_env.State:
-    """Resets the environment to a random state."""
-    self._select_random_env()
-    qpos = jp.array(self._active_env["initial_qpos"].copy())
+  def _get_current_cave_data(self) -> Dict[str, jax.Array]:
+    """Get the data for the currently selected cave in JAX format."""
+    if self._current_cave_id is None:
+        raise ValueError("No cave is currently selected")
     
-    qvel = jp.zeros(self.mjx_model.nv)
+    cave_data = self._cave_params[self._current_cave_id]
+    
+    # Convert starting positions to JAX arrays
+    starting_pos = cave_data["starting_pos"]
+    max_positions = 10  # Same as in _select_random_env
+    
+    start_x = [pos["x"] if pos is not None else 0.0 for pos in starting_pos] + [0.0] * (max_positions - len(starting_pos))
+    start_y = [pos["y"] if pos is not None else 0.0 for pos in starting_pos] + [0.0] * (max_positions - len(starting_pos))
+    start_z = [pos["z"] if pos is not None else 0.0 for pos in starting_pos] + [0.0] * (max_positions - len(starting_pos))
+    valid_count = len([p for p in starting_pos if p is not None])
+    
+    return {
+        'starting_pos_x': jp.array(start_x[:max_positions]),
+        'starting_pos_y': jp.array(start_y[:max_positions]),
+        'starting_pos_z': jp.array(start_z[:max_positions]),
+        'target_pos': jp.array(cave_data["target_pos"]),
+        'starting_pos_length': jp.array(valid_count),
+        'cave_id': jp.array(self._current_cave_id),
+        'voxel_bounds': jp.array(cave_data["voxel_bounds"])
+    }
+
+  def reset(self, rng: jax.Array) -> mjx_env.State:
+    """Reset the environment. Works with both domain randomization and manual cave selection."""
+    
+    if self._domain_randomization_enabled:
+        # For domain randomization, select a random cave and get its data
+        rng, cave_rng = jax.random.split(rng)
+        num_caves = len(self.caveIds)
+        cave_idx = jax.random.randint(cave_rng, (), 0, num_caves)
+        env_data = self.get_current_cave_data_from_randomization(cave_idx)
+    else:
+        # For manual cave selection, require a cave to be selected first
+        if self._current_cave_id is None:
+            raise ValueError("No cave is currently selected. Call select_cave_environment first.")
+        env_data = self._get_current_cave_data()
+        cave_idx = jp.array(0)  # Not used in manual mode, but needed for info dict
+    
+    length_starting_pos = env_data['starting_pos_length']
+    rng, key = jax.random.split(rng)
+    qpos = self._init_q.copy()
+    random_index = jax.random.randint(key, (), 0, length_starting_pos)
+    #new_position = jp.array([
+    #    env_data['starting_pos_x'][random_index], 
+    #    env_data['starting_pos_y'][random_index], 
+    #    env_data['starting_pos_z'][random_index]
+    #])
+    new_position = jp.array([
+        env_data['starting_pos_x'][0], 
+        env_data['starting_pos_y'][0], 
+        env_data['starting_pos_z'][0]
+    ])
+    qpos = qpos.at[:3].set(new_position)
 
     # Randomize the initial z axis orientation of the robot
     rng, key = jax.random.split(rng)
@@ -388,18 +834,21 @@ class CaveExplore(mjx_env.MjxEnv):
     )
 
     rng, key1, key2 = jax.random.split(rng, 3)
-  # Compute and store initial distance to target in info dict (JAX-safe)
-    init_dist_to_target = jp.linalg.norm(qpos[0:3] - jp.array(self._active_env["target_pos"]))
 
     pos_history = jp.tile(qpos[0:3], (self._no_movement_steps, 1))
   
     info = {
-        "init_dist_to_target": init_dist_to_target,
         "rng": rng,
-        "target_pos": self._active_env["target_pos"],
+        "init_pos": qpos[0:3],
+        "target_pos": env_data['target_pos'],
+        "voxel_bounds": env_data['voxel_bounds'],
+        "cave_id": env_data['cave_id'],
+        "cave_idx": cave_idx,  # Store the cave index for domain randomization
+        "domain_randomization_enabled": self._domain_randomization_enabled,
+        "lidar_ranges": jp.zeros((self._lidar_num_horizontal_rays, self._lidar_num_vertical_rays)),
+        "deepest_lidar_direction": jp.zeros(3),  # Direction of the deepest LIDAR ray
         "last_act": jp.zeros(self.action_size),  # Changed from self.mjx_model.nu to self.action_size
         "last_last_act": jp.zeros(self.action_size),  # Changed from self.mjx_model.nu to self.action_size
-        "last_contact": jp.zeros(len(self._feet_geom_id), dtype=bool),
         "steps_until_next_pert": steps_until_next_pert,
         "pert_duration_seconds": pert_duration_seconds,
         "pert_duration": pert_duration_steps,
@@ -413,18 +862,19 @@ class CaveExplore(mjx_env.MjxEnv):
         # Stickiness state tracking for each boom
         "boom_stickiness_active": jp.zeros(4, dtype=bool),  # Track which booms are currently stuck
         "last_stickiness_ctrl": jp.zeros(4),  # Track previous stickiness control values
+        "heading_from_imu": 0.0,
+        "distance_from_imu": 0.0,
+        "torso_contact": 0,  # Track if torso is in contact with cave walls
     }
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
-    metrics["swing_peak"] = jp.zeros(())
 
     obs = self._get_obs(data, info)
     reward, done = jp.zeros(2)
     
     return mjx_env.State(data, obs, reward, done, metrics, info)
-
 
   def step(self, state: mjx_env.State, action: jax.Array) -> mjx_env.State:
     """Applies action to the environment and returns the new state."""
@@ -436,48 +886,12 @@ class CaveExplore(mjx_env.MjxEnv):
     stickiness_action = action[self.mjx_model.nu:] 
     motor_targets = state_formatted + actuator_action * self._config.action_scale
 
-    # Handle contacts properly - in MJX, contacts is a struct with arrays
-    contacts = state.data.contact
-    
-    # Check if there are any contacts first
-    if state.data.ncon > 0:
-        
-        if state.data.ncon > self._max_contacts:
-            self._max_contacts = state.data.ncon
-            print(f"Max contacts updated to {self._max_contacts} based on current step.")
-        # Ensure contacts.geom is a 2D array with shape (ncon, 2
-        # Get contact geom pairs - contacts.geom is shape (ncon, 2)
-        contact_geom1 = contacts.geom[:, 0]  # First geom in each contact
-        contact_geom2 = contacts.geom[:, 1]  # Second geom in each contact
-        
-        # Find contacts between feet and floor
-        feet_floor_contacts1 = jp.isin(contact_geom1, self._feet_geom_id) & jp.isin(contact_geom2, self._floor_geom_ids)
-        feet_floor_contacts2 = jp.isin(contact_geom2, self._feet_geom_id) & jp.isin(contact_geom1, self._floor_geom_ids)
-        
-        # Get the foot geom IDs that are in contact
-        foot_contacts1 = jp.where(feet_floor_contacts1, contact_geom1, -1)
-        foot_contacts2 = jp.where(feet_floor_contacts2, contact_geom2, -1)
-        
-        # Combine both cases and filter out -1 values
-        all_foot_contacts = jp.concatenate([foot_contacts1, foot_contacts2])
-        
-        # Create contact array for each foot by checking if any contact matches each foot geom ID
-        # We don't need to filter out -1 values, just check if any valid contact matches
-        contact = jp.array([jp.any((all_foot_contacts == geom_id) & (all_foot_contacts >= 0)) for geom_id in self._feet_geom_id])
-    else:
-        # No contacts detected
-        contact = jp.zeros(len(self._feet_geom_id), dtype=bool)
-
-    if self._config.stickiness_config.enable:
-      # Apply stickiness force if enabled - pass contact information to avoid recomputing
-      xfrc_applied = self._apply_stickiness_forces(state, stickiness_action, contacts)
-      
-      # Update stickiness state in info
-      updated_info = self._update_stickiness_state(state.info, stickiness_action)
-      state = state.replace(info=updated_info)
-      
-      state = state.replace(data=state.data.replace(xfrc_applied=xfrc_applied))
-    # ... rest of method ...
+    torso_contact_dist, torso_contact_normal = self.get_collision_with_torso(
+        state.data._impl.contact
+    )
+    state.info["torso_contact"] = jp.where(
+        torso_contact_dist < 0.0, 1, 0
+    )
 
     data = mjx_env.step(
         self.mjx_model, state.data, motor_targets, self.n_substeps
@@ -487,7 +901,6 @@ class CaveExplore(mjx_env.MjxEnv):
     # Renormalize quaternion to prevent numerical drift
     data = data.replace(qpos=renormalize_quat(data.qpos))
 
-    contact_filt = contact | state.info["last_contact"]
     p_f = data.site_xpos[self._feet_site_id]
     p_fz = p_f[..., -1]
 
@@ -500,7 +913,7 @@ class CaveExplore(mjx_env.MjxEnv):
     done = self._get_termination(data, state.info)
 
     rewards = self._get_reward(
-        data, action, state.info, state.metrics, done, contact
+        data, action, state.info, state.metrics, done
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -519,177 +932,139 @@ class CaveExplore(mjx_env.MjxEnv):
     state.info["steps"] += 1
     return state
   
-  def _prefilter_boom_wall_contacts(self, contacts, ncon: int) -> tuple:
-    """Pre-filter contacts to only include boom-wall interactions with optimized lookups."""
-    if ncon == 0:
-        return jp.array([], dtype=bool), jp.array([], dtype=jp.int32), jp.array([], dtype=jp.int32), jp.array([]).reshape(0, 3)
-    
-    # Handle both contact field access patterns - MJX uses different structures
-    if hasattr(contacts, 'geom'):
-        # Standard MJX contact structure
-        geom1_ids = contacts.geom[:ncon, 0]
-        geom2_ids = contacts.geom[:ncon, 1]
-        contact_positions = contacts.pos[:ncon]
-    else:
-        # Alternative contact structure
-        geom1_ids = contacts.geom1[:ncon]
-        geom2_ids = contacts.geom2[:ncon]
-        contact_positions = contacts.pos[:ncon]
-    
-    # Efficient vectorized lookup using isin (faster than individual binary searches)
-    is_boom1 = jp.isin(geom1_ids, self._boom_geom_ids)
-    is_boom2 = jp.isin(geom2_ids, self._boom_geom_ids)
-    is_wall1 = jp.isin(geom1_ids, self._floor_geom_ids)
-    is_wall2 = jp.isin(geom2_ids, self._floor_geom_ids)
-    
-    # Find boom-wall contacts: (boom1 & wall2) OR (boom2 & wall1)
-    boom_wall_mask = (is_boom1 & is_wall2) | (is_boom2 & is_wall1)
-    
-    # Extract boom and wall geom IDs for valid contacts using more efficient operations
-    boom_geom_ids = jp.where(is_boom1 & is_wall2, geom1_ids,
-                            jp.where(is_boom2 & is_wall1, geom2_ids, -1))
-    wall_geom_ids = jp.where(is_boom1 & is_wall2, geom2_ids,
-                            jp.where(is_boom2 & is_wall1, geom1_ids, -1))
-    
-    return boom_wall_mask, boom_geom_ids, wall_geom_ids, contact_positions
+  def get_collisions_with_boom_ends(
+    contact: Any,
+    boom_ends: jp.array,   # int32[M]
+    cave_geoms: jp.array,  # int32[K]
+) -> Tuple[jp.ndarray, jp.ndarray]:
+    """
+    contact.geom   -> int32[N,2]
+    contact.dist   -> float32[N]
+    contact.frame  -> float32[N,2,7]
 
-  def _update_stickiness_state(self, info: Dict[str, Any], stickiness_ctrl: jax.Array) -> Dict[str, Any]:
-    """Update boom stickiness activation state with hysteresis."""
-    last_ctrl = info["last_stickiness_ctrl"]
-    currently_active = info["boom_stickiness_active"]
-    
-    # Hysteresis thresholds
-    activate_threshold = self._config.stickiness_config.min_activation_threshold
-    deactivate_threshold = self._config.stickiness_config.deactivation_threshold
-    
-    # Activation: not currently active AND control signal crosses activation threshold
-    newly_activated = (~currently_active) & (last_ctrl <= activate_threshold) & (stickiness_ctrl > activate_threshold)
-    
-    # Deactivation: currently active AND control signal drops below deactivation threshold  
-    newly_deactivated = currently_active & (stickiness_ctrl < deactivate_threshold)
-    
-    # Update state
-    new_active_state = (currently_active | newly_activated) & (~newly_deactivated)
-    
-    # Update info dict
-    info["boom_stickiness_active"] = new_active_state
-    info["last_stickiness_ctrl"] = stickiness_ctrl
-    
-    return info
+    Returns:
+      dists   : float32[M]    (deepest dist per boom_end)
+      normals : float32[M,3]  (outward normal per boom_end)
+    """
+    geom_pair = contact.geom        # [N,2]
+    dist_arr  = contact.dist        # [N]
+    frame     = contact.frame       # [N,2,7]
 
-  def _apply_stickiness_forces(self, state: mjx_env.State, stickiness_ctrl: jax.Array, contacts) -> jax.Array:
-    """Apply stickiness forces with efficient pre-filtering and state management."""
-    xfrc_applied = jp.zeros((self.mjx_model.nbody, 6))
-    
-    if state.data.ncon == 0:
-        return xfrc_applied
-    
-    # Update stickiness state with hysteresis - get updated info dict
-    updated_info = self._update_stickiness_state(state.info, stickiness_ctrl)
-    
-    # Pre-filter to only boom-wall contacts
-    boom_wall_mask, boom_geom_ids, wall_geom_ids, contact_positions = self._prefilter_boom_wall_contacts(
-        contacts, state.data.ncon
-    )
-    
-    # Early exit if no boom-wall contacts
-    if jp.sum(boom_wall_mask) == 0:
-        return xfrc_applied
-    
-    # Filter to only valid boom-wall contacts
-    valid_boom_geoms = boom_geom_ids[boom_wall_mask]
-    valid_contact_pos = contact_positions[boom_wall_mask]
-    
-    # Create efficient lookup maps for boom geoms to avoid repeated searches
-    # Use vectorized searchsorted for all valid boom geoms at once
-    boom_indices = jp.searchsorted(self._boom_geom_ids, valid_boom_geoms)
-    
-    # Validate indices and ensure they point to correct geoms
-    valid_idx_mask = (boom_indices < len(self._boom_geom_ids)) & \
-                     (self._boom_geom_ids[boom_indices] == valid_boom_geoms)
-    
-    # Get boom numbers and body IDs for valid contacts
-    boom_nums = jp.where(valid_idx_mask, self._boom_nums[boom_indices], -1)
-    boom_body_ids = jp.where(valid_idx_mask, self._boom_body_ids[boom_indices], -1)
-    
-    # Check which booms are in active sticky state using updated info
-    boom_active_mask = jp.zeros_like(boom_nums, dtype=bool)
-    for i in range(4):  # Assuming 4 booms max
-        boom_i_mask = (boom_nums == i) & valid_idx_mask
-        boom_active_mask = jp.where(
-            boom_i_mask,
-            updated_info["boom_stickiness_active"][i],
-            boom_active_mask
-        )
-    
-    # Final filter: valid boom contacts that are actually active
-    final_valid_mask = valid_idx_mask & boom_active_mask
-    
-    # Early exit if no active boom contacts
-    if jp.sum(final_valid_mask) == 0:
-        return xfrc_applied
-    
-    # Extract final valid data
-    final_boom_body_ids = boom_body_ids[final_valid_mask]
-    final_contact_pos = valid_contact_pos[final_valid_mask]
-    
-    # Calculate forces vectorized for all valid contacts
-    boom_positions = state.data.xpos[final_boom_body_ids]
-    direction_vectors = final_contact_pos - boom_positions
-    distances = jp.linalg.norm(direction_vectors, axis=1, keepdims=True)
-    
-    # Avoid division by zero and normalize
-    safe_distances = jp.maximum(distances, 1e-8)
-    normalized_directions = direction_vectors / safe_distances
-    
-    force_magnitude = self._config.stickiness_config.stickiness_force
-    forces = force_magnitude * normalized_directions
-    
-    # Apply forces using efficient JAX operations
-    return self._accumulate_forces_efficiently(xfrc_applied, final_boom_body_ids, forces)
+    # Expand dims so we can compare every boom_end against every contact:
+    # boom_ends[:,None] has shape [M,1]
+    # geom_pair[None,:,:] has shape [1,N,2]
+    be = boom_ends[:, None]         # [M,1]
+    g0 = geom_pair[None, :, 0]      # [1,N]
+    g1 = geom_pair[None, :, 1]      # [1,N]
 
-  def _accumulate_forces_efficiently(self, xfrc_applied, body_ids, forces):
-    """Efficiently accumulate forces using JAX operations."""
-    if body_ids.shape[0] == 0:
-        return xfrc_applied
-    
-    # Use JAX's advanced indexing for efficient force accumulation
-    # This automatically handles multiple forces on the same body by summing them
-    
-    # Apply translational forces (first 3 components of xfrc_applied)
-    for i in range(forces.shape[0]):
-        body_id = body_ids[i]
-        force = forces[i]
-        # Apply force only if it's significant to avoid numerical noise
-        force_mag_sq = jp.sum(jp.square(force))
-        xfrc_applied = jp.where(
-            force_mag_sq > 1e-12,  # Threshold for significant force
-            xfrc_applied.at[body_id, :3].add(force),
-            xfrc_applied
-        )
-    
-    return xfrc_applied
+    # Which contact slots match boom_end?
+    is_be0 = (g0 == be)             # [M,N]
+    is_be1 = (g1 == be)             # [M,N]
+
+    # Which contact slots match any cave_geom?
+    in_cave0 = jp.isin(g0, cave_geoms)  # [1,N] broadcast→[M,N]
+    in_cave1 = jp.isin(g1, cave_geoms)  # [1,N] broadcast→[M,N]
+
+    # Final mask: boom_end on one side, cave on the other
+    mask = ((is_be0 & in_cave1) | (is_be1 & in_cave0)) & (dist_arr[None, :] < 0.0)  # [M,N]
+
+    # Broadcast dist_arr to [M,N], but push non‑matches to +inf
+    dists_b = jp.where(mask, dist_arr[None, :], jp.inf)  # [M,N]
+
+    # For each boom_end (axis=1), pick the *minimum* dist (deepest penetration)
+    idx = jp.argmin(dists_b, axis=1)  # [M], indices into contacts
+
+    # Gather the actual deepest distances
+    deepest = dists_b[jp.arange(boom_ends.shape[0]), idx]  # [M]
+
+    # Now gather normals.  frame[:,0,:3] is the normal for geom_pair[:,0]
+    # We need normals[be] to always point *out* of the boom_end:
+    #   if geom_pair[i,0] == boom_end  → use  frame[i,0,:3]
+    #   else                           → use -frame[i,0,:3]
+    normals0 = frame[:, 0, :3]       # [N,3]
+    chosen_norm0 = normals0[idx]     # [M,3]
+
+    # Determine whether the boom_end was at geom_pair[idx,0] (vs geom_pair[idx,1])
+    be_at_pos0 = (geom_pair[idx, 0] == boom_ends)
+    normals = jp.where(be_at_pos0[:, None],
+                        chosen_norm0,
+                        -chosen_norm0)  # [M,3]
+
+    return deepest, normals
   
+  def get_collision_with_torso(
+        self,
+        contact: Any,
+    ) -> Tuple[jp.ndarray, jp.ndarray]:
+        """
+        Returns (dist, normal) for the *deepest* contact
+        between `torso_geom` and *any* of the geoms in `cave_geoms`.
+        If there are no such contacts, dist will be +1e8 and normal = 0.
+        """
+        # contact.geom: (Ncont, 2), contact.dist: (Ncont,), contact.frame: (Ncont, 2, 7)
+        geom_pair = contact.geom            # int32[Ncont,2]
+        dist_arr = contact.dist             # float32[Ncont]
+        frame    = contact.frame            # float32[Ncont,2,7]
+
+        # build mask of “this contact involves torso_geom on one side
+        # and ANY cave_geom on the other side”
+        is_t0 = geom_pair[:, 0] == self._torso_body_id
+        is_t1 = geom_pair[:, 1] == self._torso_body_id
+
+        # jnp.isin for membership test: shape (Ncont,)
+        # cave_geoms is an array of your 3 000 wall‐ids
+        in_cave0 = jp.isin(geom_pair[:, 0], self._cave_geom_ids)
+        in_cave1 = jp.isin(geom_pair[:, 1], self._cave_geom_ids)
+
+        mask = (is_t0 & in_cave1) | (is_t1 & in_cave0)  # bool[Ncont]
+
+        # replace all non‐matches with +inf so argmin picks only valid ones
+        safe_dists = jp.where(mask, dist_arr, 1e8)
+
+        # index of the minimal distance (i.e. deepest penetration)
+        idx = jp.argmin(safe_dists)
+
+        # pull it out
+        d = safe_dists[idx]
+
+        # frame[idx,0,:3] is the normal *for geom_pair[idx,0]*;
+        # if geom_pair[idx,0] was the torso we leave it, otherwise flip it.
+        n0 = frame[idx, 0, :3]
+        normal = jp.where(geom_pair[idx,0] == self._torso_body_id, n0, -n0)
+
+              
+        # Use jp.where instead of if statement for JAX compatibility
+        no_contact_dist = jp.array(1e8, dtype=jp.float32)
+        no_contact_normal = jp.zeros(3, dtype=jp.float32)
+
+        # Return based on whether there's contact (d <= 0) or not (d > 0)
+        final_dist = jp.where(d > 0, no_contact_dist, d)
+        final_normal = jp.where(d > 0, no_contact_normal, normal)
+
+        return final_dist, final_normal
+
+
   def _get_termination(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
      qpos = data.qpos
      
-     # Get voxel bounds from active environment with buffer
-     voxel_bounds = self._active_env["json_data"]["voxel_bounds"]
+     # Get voxel bounds from info (passed from reset) with buffer
+     # voxel_bounds format: [x_min, x_max, y_min, y_max, z_min, z_max]
+     voxel_bounds = info["voxel_bounds"]
      buffer = 0.1  # 0.1 meter buffer
      
      # Check if robot position is outside voxel bounds + buffer
      out_of_bounds = (
-         (qpos[0] < voxel_bounds["x_min"] - buffer) | (qpos[0] > voxel_bounds["x_max"] + buffer) |
-         (qpos[1] < voxel_bounds["y_min"] - buffer) | (qpos[1] > voxel_bounds["y_max"] + buffer) |
-         (qpos[2] < voxel_bounds["z_min"] - buffer) | (qpos[2] > voxel_bounds["z_max"] + buffer)
+         (qpos[0] < voxel_bounds[0] - buffer) | (qpos[0] > voxel_bounds[1] + buffer) |
+         (qpos[1] < voxel_bounds[2] - buffer) | (qpos[1] > voxel_bounds[3] + buffer) |
+         (qpos[2] < voxel_bounds[4] - buffer) | (qpos[2] > voxel_bounds[5] + buffer)
      )
      
      # Check if any feet positions are outside voxel bounds + buffer
      feet_positions = data.site_xpos[self._feet_site_id]  # Shape: (n_feet, 3)
      feet_out_of_bounds = jp.any(
-         (feet_positions[:, 0] < voxel_bounds["x_min"] - buffer) | (feet_positions[:, 0] > voxel_bounds["x_max"] + buffer) |
-         (feet_positions[:, 1] < voxel_bounds["y_min"] - buffer) | (feet_positions[:, 1] > voxel_bounds["y_max"] + buffer) |
-         (feet_positions[:, 2] < voxel_bounds["z_min"] - buffer) | (feet_positions[:, 2] > voxel_bounds["z_max"] + buffer)
+         (feet_positions[:, 0] < voxel_bounds[0] - buffer) | (feet_positions[:, 0] > voxel_bounds[1] + buffer) |
+         (feet_positions[:, 1] < voxel_bounds[2] - buffer) | (feet_positions[:, 1] > voxel_bounds[3] + buffer) |
+         (feet_positions[:, 2] < voxel_bounds[4] - buffer) | (feet_positions[:, 2] > voxel_bounds[5] + buffer)
      )
 
      # No movement termination
@@ -701,16 +1076,14 @@ class CaveExplore(mjx_env.MjxEnv):
      has_waited_long_ENOUGH = info["steps"] > self._no_movement_steps
      is_not_moving = movement < self._no_movement_threshold
      no_movement = is_not_moving & has_waited_long_ENOUGH
-     
-     # NaN detection termination
-     has_nan = (jp.any(jp.isnan(qpos)) | 
-                jp.any(jp.isnan(data.qvel)) | 
-                jp.any(jp.isnan(data.ctrl)) |
-                jp.any(jp.isinf(qpos)) |
-                jp.any(jp.isinf(data.qvel)))
 
-     return out_of_bounds | feet_out_of_bounds | no_movement #| has_nan # Include feet bounds and NaN in termination conditions
+     # Terminate if upvector is inversed 
+     fall_termination = self.get_upvector(data)[-1] < 0.0
 
+     # Terminate if torso is in contact with cave walls
+     torso_contact = info["torso_contact"]
+
+     return out_of_bounds | feet_out_of_bounds | no_movement | torso_contact
 
   def _get_obs(
       self, data: mjx.Data, info: Dict[str, Any]
@@ -723,6 +1096,7 @@ class CaveExplore(mjx_env.MjxEnv):
         * self._config.noise_config.level
         * self._config.noise_config.scales.gyro
     )
+    info["heading_from_imu"] = info["heading_from_imu"] + noisy_gyro[2] * self._config.sim_dt
 
     gravity = self.get_gravity(data)
     info["rng"], noise_rng = jax.random.split(info["rng"])
@@ -759,10 +1133,15 @@ class CaveExplore(mjx_env.MjxEnv):
         * self._config.noise_config.level
         * self._config.noise_config.scales.linvel
     )
+    info["distance_from_imu"] = info["distance_from_imu"] + jp.linalg.norm(noisy_linvel) * self._config.sim_dt
 
     # LIDAR data
     lidar_pos = self.get_lidar_pos(data)
     lidar_ranges = self._get_lidar_ranges(data, lidar_pos)
+    info["lidar_ranges"] = lidar_ranges
+    info["deepest_lidar_direction"] = self._get_avg_deepest_lidar_range(
+        lidar_ranges, self._local_ray_directions
+    )
     
     # Flatten LIDAR directions for network input (each direction is 3D)
     lidar_directions_flat = self._local_ray_directions.flatten()
@@ -776,6 +1155,8 @@ class CaveExplore(mjx_env.MjxEnv):
         info["last_act"],  # 12
         lidar_ranges,  # LIDAR ranges
         lidar_directions_flat,  # LIDAR ray directions (flattened)
+        info["distance_from_imu"],  # 1
+        info["heading_from_imu"],  # 1
     ])
 
     accelerometer = self.get_accelerometer(data)
@@ -791,7 +1172,6 @@ class CaveExplore(mjx_env.MjxEnv):
         angvel,  # 3
         noisy_joint_vel,  # 12
         data.actuator_force,  # 12
-        info["last_contact"],  # 4
         feet_vel,  # 4*3
         data.xfrc_applied[self._torso_body_id, :3],  # 3
         info["steps_since_last_pert"] >= info["steps_until_next_pert"],  # 1
@@ -807,24 +1187,50 @@ class CaveExplore(mjx_env.MjxEnv):
     total_lidar_rays = self._lidar_num_horizontal_rays * self._lidar_num_vertical_rays
     ranges = jp.full(total_lidar_rays, self._lidar_max_range, dtype=jp.float32)
     
-    imu_quat = mjx_env.get_sensor_data(self._active_env["mj_model"], data, consts.ORIENTATION_SENSOR)
+    # Get the IMU orientation (robot body orientation)
+    imu_quat = mjx_env.get_sensor_data(self.current_mj_model, data, consts.ORIENTATION_SENSOR)
+    # Convert quaternion to rotation matrix
     rot_mat = math.quat_to_mat(imu_quat)
 
     # Use precomputed local ray directions
     for ray_idx in range(total_lidar_rays):
+        # Get local ray direction
         local_ray_dir = self._local_ray_directions[ray_idx]
         
-        # Transform to world coordinates
+        # Transform local direction to world coordinates using robot orientation
         world_ray_dir = rot_mat @ local_ray_dir
         
+        # Cast ray from head position in world direction
         hit_dist, hit_geom_id = mjx.ray(self.mjx_model, data, head_pos, world_ray_dir)
 
+        # Clamp distance to max range, use max range if no hit
         current_range = jp.where(hit_dist >= 0.0, 
                                  jp.minimum(hit_dist, self._lidar_max_range), 
                                  self._lidar_max_range)
         ranges = ranges.at[ray_idx].set(current_range)
             
     return ranges
+
+  def _at_min_wall_distance(self, lidar_ranges: jax.Array) -> jax.Array:
+    """Check if the robot is at the minimum wall distance based on LIDAR ranges."""
+    # Check if any LIDAR range is less than or equal to the minimum wall distance
+    return jp.any(lidar_ranges <= 0.2)
+
+  def _get_avg_deepest_lidar_range(self, lidar_ranges: jax.Array, norm_lidar_directions: jax.Array) -> jax.Array:
+    """Compute the direction of the average deepest LIDAR range in robot's local frame."""
+    # Weight each local direction by its corresponding range
+    # This gives us the average direction weighted by how far we can see in each direction
+    weighted_directions = lidar_ranges[:, None] * norm_lidar_directions  # shape: (num_rays, 3)
+    
+    # Sum all weighted directions
+    sum_weighted_direction = jp.sum(weighted_directions, axis=0)  # shape: (3,)
+    
+    # Normalize to get unit direction vector
+    norm = jp.linalg.norm(sum_weighted_direction)
+    norm = jp.where(norm < 1e-6, 1e-6, norm)  # Avoid division by zero
+    avg_deepest_direction = sum_weighted_direction / norm
+    
+    return avg_deepest_direction
 
   def _get_reward(
         self,
@@ -833,20 +1239,19 @@ class CaveExplore(mjx_env.MjxEnv):
         info: Dict[str, Any],
         metrics: Dict[str, Any],
         done: jax.Array,
-        contact: jax.Array,
     ) -> Dict[str, jax.Array]:
         del metrics  # Unused.
         #jax.debug.print("CaveExplore step: {qpos}", qpos=data.qpos)
+        gate = self._at_min_wall_distance(info["lidar_ranges"])
         return {
-            "distance_to_target": self._reward_dist_to_target(
-                data.qpos[0:3], jp.array(info["target_pos"]), jp.array(info["init_dist_to_target"])
+            "distance_from_start": self._cost_dist_from_start(
+                data.qpos[0:3], jp.array(info["init_pos"]), info["last_pos"]
             ),
-            "vel_to_target": self._reward_vel_to_target(
-                data.qpos[0:3], jp.array(info["target_pos"]), jp.array(info["last_pos"])
+            "track_lidar_direction": self._reward_track_lidar_direction(
+                jp.array(info["deepest_lidar_direction"]), self.get_local_linvel(data), gate
             ),
+            "stability": self._cost_stability(self.get_feet_pos(data)),
             "exploration_rate": self._reward_exploration_rate(data.qpos[0:3]),
-            "lin_vel_z": self._cost_lin_vel_z(self.get_global_linvel(data)),
-            "ang_vel_xy": self._cost_ang_vel_xy(self.get_global_angvel(data)),
             "orientation": self._cost_orientation(self.get_upvector(data)),
             "termination": self._cost_termination(done),
             "torques": self._cost_torques(data.actuator_force),
@@ -854,20 +1259,12 @@ class CaveExplore(mjx_env.MjxEnv):
                 action, info["last_act"], info["last_last_act"]
             ),
             "energy": self._cost_energy(data.qvel[6:], data.actuator_force),
-            "feet_slip": self._cost_feet_slip(data, contact, info),
             "dof_pos_limits": self._cost_joint_pos_limits(data.qpos[7:]),
             "inactivity": self._cost_inactivity(self.get_global_linvel(data)),
         }
 
   # Base-related rewards.
 
-  def _cost_lin_vel_z(self, global_linvel) -> jax.Array:
-    # Penalize z axis base linear velocity.
-    return jp.square(global_linvel[2])
-
-  def _cost_ang_vel_xy(self, global_angvel) -> jax.Array:
-    # Penalize xy axes base angular velocity.
-    return jp.sum(jp.square(global_angvel[:2]))
 
   def _cost_orientation(self, torso_zaxis: jax.Array) -> jax.Array:
     # Penalize non flat base orientation.
@@ -894,25 +1291,66 @@ class CaveExplore(mjx_env.MjxEnv):
   def _cost_termination(self, done: jax.Array) -> jax.Array:
     # Penalize early termination.
     return done
-  
-  def _reward_vel_to_target(self, qpos: jax.Array, target_pos: jax.Array, last_pos: jax.Array) -> jax.Array:
-    # Reward for velocity towards target
-    last_dist = jp.linalg.norm(last_pos - target_pos)
-    current_dist = jp.linalg.norm(qpos - target_pos)
-    dist_diff = last_dist - current_dist
-    diff_norm = dist_diff / self._max_dist_per_step# Normalize by max distance per step to reduce variance
-    diff_norm = jp.clip(diff_norm, 0.0, 1.0)
-    return diff_norm
 
-  
-  def _reward_dist_to_target(self, current_pos: jax.Array, target_pos: jax.Array, max_dist: jax.Array) -> jax.Array:
+  def _reward_track_lidar_direction(self, target_direction_norm: jax.Array, local_vel: jax.Array, gate: jax.Array) -> jax.Array:
+    """Reward for velocity alignment with the deepest LIDAR direction."""
+    # target_direction_norm is already in local coordinates from _get_avg_deepest_lidar_range
+    # local_vel is also in local coordinates from get_local_linvel
+    
+    # Normalize velocity vector
+    vel_norm = jp.linalg.norm(local_vel)
+    local_vel_normalized = jp.where(vel_norm < 1e-6, 
+                                   jp.zeros_like(local_vel), 
+                                   local_vel / vel_norm)
+    
+    # Compute alignment (dot product of normalized vectors)
+    alignment = jp.dot(local_vel_normalized, target_direction_norm)
+    
+    # Scale by gate and velocity magnitude for more nuanced reward
+    vel_scale = jp.tanh(vel_norm / self._max_ms)  # Scale by how fast robot is moving
+    
+    return alignment * gate * vel_scale
+
+
+  def _cost_dist_from_start(self, start_pos: jax.Array, current_pos: jax.Array, last_pos: jax.Array) -> jax.Array:
     # Reward for being closer to target with configurable shaping to reduce variance
-    current_dist = jp.linalg.norm(current_pos - target_pos)
-    dist_norm = (max_dist - current_dist) / max_dist
-    dist_norm = jp.clip(dist_norm, -0.1, 1.0)  # Ensure it's between 0 and 1
-    return dist_norm
-  
-  
+    dist_change = jp.linalg.norm(current_pos - start_pos) - jp.linalg.norm(last_pos - start_pos)
+    dist_change_norm = dist_change / (self._max_ms * self._config.sim_dt)  # Normalize by max speed and time step
+    return jp.clip(dist_change_norm, 0.0, 1.0)
+
+  def _cost_stability(self, local_feet_pos: jax.Array) -> jax.Array:
+    """Fast stability reward using simplified support polygon approximation."""
+    
+    # Extract x, y coordinates only
+    feet_xy = local_feet_pos[:, :2]  # Shape: (n_feet, 2)
+
+    # Fast approximation: use bounding box of feet as support region
+    min_x = jp.min(feet_xy[:, 0])
+    max_x = jp.max(feet_xy[:, 0])
+    min_y = jp.min(feet_xy[:, 1])
+    max_y = jp.max(feet_xy[:, 1])
+    
+    # Distance from COM to edges of bounding rectangle
+    dist_to_edges = jp.array([
+        - min_x,  # left edge
+        max_x,  # right edge
+        - min_y,  # bottom edge
+        max_y    # top edge
+    ])
+    
+    # Minimum distance to any edge (negative if outside)
+    margin = jp.min(dist_to_edges)
+    
+    # Normalize and convert to reward [0, 1]
+    characteristic_length = 0.4  # typical foot spacing
+    normalized_margin = margin / characteristic_length
+    
+    # Smooth reward function
+    cost = jp.clip(jp.tanh((normalized_margin + 1) * 5.0), -1.0, 0.0)
+
+    return -cost # Return inverse since multiplier for cost is negative already 
+
+
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
     # Reward for exploration - could be enhanced with visited positions tracking
     # For now, return 0 but this could be expanded to reduce variance
@@ -930,14 +1368,6 @@ class CaveExplore(mjx_env.MjxEnv):
     return jp.sum(out_of_limits)
 
   # Feet related rewards.
-
-  def _cost_feet_slip(
-      self, data: mjx.Data, contact: jax.Array, info: Dict[str, Any]
-  ) -> jax.Array:
-    feet_vel = data.sensordata[self._foot_linvel_sensor_adr]
-    vel_xy = feet_vel[..., :2]
-    vel_xy_norm_sq = jp.sum(jp.square(vel_xy), axis=-1)
-    return jp.sum(vel_xy_norm_sq * contact)
 
   def _cost_inactivity(self, global_linvel: jax.Array) -> jax.Array:
     # Penalize inactivity - cost decreases from 1 (stationary) to 0 (max speed)
@@ -1010,12 +1440,12 @@ class CaveExplore(mjx_env.MjxEnv):
   @property
   def xml_path(self) -> str:
     """Path to the xml file for the environment."""
-    return self._active_env["xml_path"]
+    return "Dynamic cave environment"  # Since we don't have a single XML file anymore
 
   @property
   def action_size(self) -> int:
     """Size of the action space."""
-    joints = self._active_env["mj_model"].nu
+    joints = self._scene_data["mj_model"].nu
     if self._config.stickiness_config.enable:
       return 4 + joints
     else:
@@ -1023,9 +1453,9 @@ class CaveExplore(mjx_env.MjxEnv):
 
   @property
   def mj_model(self) -> MjModel:
-    return self._active_env["mj_model"]
+    return self._scene_data["mj_model"]
 
   @property
   def mjx_model(self) -> mjx.Model:
-    return self._active_env["mjx_model"]
+    return self._scene_data["mjx_model"]
 

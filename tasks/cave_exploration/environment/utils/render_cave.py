@@ -50,14 +50,14 @@ def render_mesh( scale=1.0):
 def main():
     print("MuJoCo Mesh Viewer")
     config = reachbot_config()  # Call the function to get the config object
-    envs = CaveBatchLoader(3, config)
-    rng = np.random.randint(3)  # Initialize random number generator
-    print(f"Rendering environment {envs.envs[rng]['folder']}")
-    model = envs.envs[rng]["mj_model"]
-    initial_qpos = envs.envs[rng]["initial_qpos"]
+    envs = CaveBatchLoader(config)
+    
+    # Use training scene by default
+    model = envs.training_scene["mj_model"]
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, 0)
-    data.qpos[:] = initial_qpos  # Set the initial position
+    
+    print(f"Rendering training scene with {len(envs.training_scene['caves'])} caves")
     with mujoco.viewer.launch(model, data) as viewer:
         # Initial camera setup
         viewer.cam.lookat[:] = [0, 0, 0]  # Looking at the center

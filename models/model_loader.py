@@ -8,16 +8,13 @@ MODEL_DIR = os.path.join(os.path.dirname(__file__))
 
 class ReachbotModelType(Enum):
     BASIC = "basic"
-    DEFLECTION = "deflection"
 
 class ReachbotModel:
     def __init__(self, model_type: ReachbotModelType):
         self.model_type = model_type
         if model_type == ReachbotModelType.BASIC:
+            # Model with 4 legs
             self._model_path = MODEL_DIR + "/basic/reachbot.xml"
-        elif model_type == ReachbotModelType.DEFLECTION:
-            self._model_path = MODEL_DIR + "/deflection/reachbot.xml"
-
     
     def render_model(self):
         """
