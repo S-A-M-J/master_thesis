@@ -78,12 +78,17 @@ def default_config() -> config_dict.ConfigDict:
       reward_config = config_dict.create(
         scales=config_dict.create(
             
-            # Base movement rewards
-            orientation=-0.2,           # Penalty scale for orientation deviation (based on upwards vector sensor). Default is -5.0
-            distance_from_start=5.0,     # Reward scale for distance to target (reduced from 10.0)
-            track_lidar_direction=10.0,          # Reward scale for velocity towards target (reduced from 100.0)
-            stability=-0.1,          # Reward scale for stability (reduced from 10.0)
+            # Positive rewards
+            track_lidar_direction=10.0,  # Reward scale for velocity towards target (reduced from 100.0)
             exploration_rate=1.0,       # Reward scale for exploration rate
+            wide_stance=0.1,           # Reward scale for maintaining a wide stance for stability
+
+            # Penalties
+
+            orientation=-0.2,           # Penalty scale for orientation deviation (based on upwards vector sensor). Default is -5.0
+            distance_from_start=-5.0,     # Penalty scale for distance to target (reduced from 10.0)
+            stability=-0.1,          # Penalty scale for stability (reduced from 10.0)
+            min_distance=-1.0,          # Penalty scale for minimum distance to walls (0 cost at 0.4m, -1 at 0m)
             
             # Other rewards
             dof_pos_limits=-1.0,        # Penalty scale for degree of freedom position limits. Default is -1.0
@@ -115,8 +120,8 @@ def default_config() -> config_dict.ConfigDict:
           num_horizontal_rays=20,  # Number of horizontal rays
           max_range=20.0,  # Maximum range of LIDAR
           horizontal_angle_range=jp.pi * 2,  # Horizontal angle range in radians
-          num_vertical_rays=3,  # Number of vertical rays
-          vertical_angle_range=jp.pi / 6,  # Vertical angle range in radians
+          num_vertical_rays=5,  # Number of vertical rays
+          vertical_angle_range=jp.pi / 2,  # Vertical angle range in radians
       ),
   )
 
@@ -244,7 +249,6 @@ class CaveExplore(mjx_env.MjxEnv):
     num_caves = len(self.caveIds)
     
     # Initialize arrays
-    all_cave_positions = jp.zeros((num_caves, max_boxes, 3))
     cave_box_counts = jp.zeros(num_caves, dtype=jp.int32)
     
     # Get all cave target positions and voxel bounds
@@ -266,17 +270,6 @@ class CaveExplore(mjx_env.MjxEnv):
         voxel_positions = cave_data["voxel_positions"]
         num_boxes = min(len(voxel_positions), max_boxes)
         cave_box_counts = cave_box_counts.at[cave_idx].set(num_boxes)
-        
-        if num_boxes > 0:
-            # Convert voxel positions to array format expected by domain randomization
-            positions_list = []
-            for pos in voxel_positions[:num_boxes]:
-                if isinstance(pos, dict):
-                    positions_list.append([pos["x"], pos["y"], pos["z"]])
-                else:
-                    positions_list.append(pos)
-            positions_array = jp.array(positions_list)
-            all_cave_positions = all_cave_positions.at[cave_idx, :num_boxes].set(positions_array)
         
         # Target positions
         target_pos = jp.array(cave_data["target_pos"])
@@ -300,7 +293,6 @@ class CaveExplore(mjx_env.MjxEnv):
     
     # Store the prepared arrays
     self._domain_randomization_data = {
-        'all_cave_positions': all_cave_positions,
         'cave_box_counts': cave_box_counts,
         'all_target_positions': all_target_positions,
         'all_voxel_bounds': all_voxel_bounds,
@@ -349,45 +341,10 @@ class CaveExplore(mjx_env.MjxEnv):
     
     print(f"Initialized {len(self._master_cave_geom_ids)} geoms for master cave {self._master_cave_id}")
 
-  def _reposition_boxes_for_cave(self, cave_id: int):
-    """Reposition master cave boxes to match the positions of the selected cave."""
-    mj_model = self._scene_data["mj_model"]
-    cave_data = self._cave_params[cave_id]
-    voxel_positions = cave_data["voxel_positions"]
-    
-    num_cave_boxes = len(voxel_positions)
-    num_master_boxes = len(self._master_cave_geom_ids)
-    
-    print(f"Repositioning {num_master_boxes} master boxes for cave {cave_id} with {num_cave_boxes} boxes")
-    
-    # Reposition boxes to match the cave
-    for i in range(num_master_boxes):
-        geom_id = self._master_cave_geom_ids[i]
-        
-        if i < num_cave_boxes:
-            # Position this box at the cave's voxel position
-            pos = voxel_positions[i]
-            mj_model.geom_pos[geom_id, 0] = pos["x"]
-            mj_model.geom_pos[geom_id, 1] = pos["y"]
-            mj_model.geom_pos[geom_id, 2] = pos["z"]
-        else:
-            # Move extra boxes out of the way (below z=-1000)
-            mj_model.geom_pos[geom_id, 0] = 0.0
-            mj_model.geom_pos[geom_id, 1] = 0.0
-            mj_model.geom_pos[geom_id, 2] = -1000.0
-    
-    # Update the mjx model with the new geom positions
-    self._scene_data["mjx_model"] = mjx.put_model(mj_model)
-    
-    print(f"Repositioned boxes for cave {cave_id}")
-
   def select_cave_environment(self, cave_id: int):
     """Select a specific cave environment by repositioning boxes."""
     if cave_id not in self._cave_params:
         raise ValueError(f"Cave ID {cave_id} not found in available caves: {list(self._cave_params.keys())}")
-    
-    # Reposition boxes to match the selected cave
-    self._reposition_boxes_for_cave(cave_id)
     
     # Update current environment parameters
     cave_data = self._cave_params[cave_id]
@@ -673,9 +630,8 @@ class CaveExplore(mjx_env.MjxEnv):
         "enabled": True,
         "num_caves": len(self.caveIds),
         "cave_ids": self.caveIds,
-        "max_boxes": dr_data['all_cave_positions'].shape[1],
+        "max_boxes": dr_data['max_boxes'].shape[1],
         "cave_data_shape": {
-            "all_cave_positions": dr_data['all_cave_positions'].shape,
             "all_target_positions": dr_data['all_target_positions'].shape,
             "all_voxel_bounds": dr_data['all_voxel_bounds'].shape,
             "starting_pos_counts": dr_data['starting_pos_counts'].shape
@@ -1083,7 +1039,7 @@ class CaveExplore(mjx_env.MjxEnv):
      # Terminate if torso is in contact with cave walls
      torso_contact = info["torso_contact"]
 
-     return out_of_bounds | feet_out_of_bounds | no_movement | torso_contact
+     return out_of_bounds | feet_out_of_bounds | torso_contact | fall_termination #| no_movement
 
   def _get_obs(
       self, data: mjx.Data, info: Dict[str, Any]
@@ -1157,6 +1113,7 @@ class CaveExplore(mjx_env.MjxEnv):
         lidar_directions_flat,  # LIDAR ray directions (flattened)
         info["distance_from_imu"],  # 1
         info["heading_from_imu"],  # 1
+        #info["deepest_lidar_direction"],  # 3 (direction of the average of top 3 deepest LIDAR ranges)
     ])
 
     accelerometer = self.get_accelerometer(data)
@@ -1199,9 +1156,10 @@ class CaveExplore(mjx_env.MjxEnv):
         
         # Transform local direction to world coordinates using robot orientation
         world_ray_dir = rot_mat @ local_ray_dir
-        
+
+        geomgroup_mask = [True, False, False, False, False, False]
         # Cast ray from head position in world direction
-        hit_dist, hit_geom_id = mjx.ray(self.mjx_model, data, head_pos, world_ray_dir)
+        hit_dist, hit_geom_id = mjx.ray(self.mjx_model, data, head_pos, world_ray_dir, geomgroup=geomgroup_mask, bodyexclude=self._torso_body_id)
 
         # Clamp distance to max range, use max range if no hit
         current_range = jp.where(hit_dist >= 0.0, 
@@ -1214,15 +1172,21 @@ class CaveExplore(mjx_env.MjxEnv):
   def _at_min_wall_distance(self, lidar_ranges: jax.Array) -> jax.Array:
     """Check if the robot is at the minimum wall distance based on LIDAR ranges."""
     # Check if any LIDAR range is less than or equal to the minimum wall distance
-    return jp.any(lidar_ranges <= 0.2)
+    return jp.any(lidar_ranges <= 0.4)
 
   def _get_avg_deepest_lidar_range(self, lidar_ranges: jax.Array, norm_lidar_directions: jax.Array) -> jax.Array:
-    """Compute the direction of the average deepest LIDAR range in robot's local frame."""
-    # Weight each local direction by its corresponding range
-    # This gives us the average direction weighted by how far we can see in each direction
-    weighted_directions = lidar_ranges[:, None] * norm_lidar_directions  # shape: (num_rays, 3)
+    """Compute the direction of the average of top 3 deepest LIDAR ranges in robot's local frame."""
+    # Get indices of top 3 deepest (largest) ranges
+    top_3_indices = jp.argsort(lidar_ranges)[-3:]  # Get indices of 3 largest values
     
-    # Sum all weighted directions
+    # Extract top 3 ranges and their corresponding directions
+    top_3_ranges = lidar_ranges[top_3_indices]  # shape: (3,)
+    top_3_directions = norm_lidar_directions[top_3_indices]  # shape: (3, 3)
+    
+    # Weight each direction by its corresponding range
+    weighted_directions = top_3_ranges[:, None] * top_3_directions  # shape: (3, 3)
+    
+    # Sum the weighted directions from top 3
     sum_weighted_direction = jp.sum(weighted_directions, axis=0)  # shape: (3,)
     
     # Normalize to get unit direction vector
@@ -1242,15 +1206,16 @@ class CaveExplore(mjx_env.MjxEnv):
     ) -> Dict[str, jax.Array]:
         del metrics  # Unused.
         #jax.debug.print("CaveExplore step: {qpos}", qpos=data.qpos)
-        gate = self._at_min_wall_distance(info["lidar_ranges"])
         return {
             "distance_from_start": self._cost_dist_from_start(
                 data.qpos[0:3], jp.array(info["init_pos"]), info["last_pos"]
             ),
             "track_lidar_direction": self._reward_track_lidar_direction(
-                jp.array(info["deepest_lidar_direction"]), self.get_local_linvel(data), gate
+                jp.array(info["deepest_lidar_direction"]), self.get_local_linvel(data)
             ),
+            "min_distance": self._cost_min_distance(info["lidar_ranges"]),
             "stability": self._cost_stability(self.get_feet_pos(data)),
+            "wide_stance": self._reward_wide_stance(self.get_feet_pos(data)),
             "exploration_rate": self._reward_exploration_rate(data.qpos[0:3]),
             "orientation": self._cost_orientation(self.get_upvector(data)),
             "termination": self._cost_termination(done),
@@ -1292,7 +1257,7 @@ class CaveExplore(mjx_env.MjxEnv):
     # Penalize early termination.
     return done
 
-  def _reward_track_lidar_direction(self, target_direction_norm: jax.Array, local_vel: jax.Array, gate: jax.Array) -> jax.Array:
+  def _reward_track_lidar_direction(self, target_direction_norm: jax.Array, local_vel: jax.Array) -> jax.Array:
     """Reward for velocity alignment with the deepest LIDAR direction."""
     # target_direction_norm is already in local coordinates from _get_avg_deepest_lidar_range
     # local_vel is also in local coordinates from get_local_linvel
@@ -1306,17 +1271,39 @@ class CaveExplore(mjx_env.MjxEnv):
     # Compute alignment (dot product of normalized vectors)
     alignment = jp.dot(local_vel_normalized, target_direction_norm)
     
-    # Scale by gate and velocity magnitude for more nuanced reward
+    # Scale by velocity magnitude for more nuanced reward
     vel_scale = jp.tanh(vel_norm / self._max_ms)  # Scale by how fast robot is moving
     
-    return alignment * gate * vel_scale
+    return alignment * vel_scale
+
+
+  def _cost_min_distance(self, lidar_ranges: jax.Array) -> jax.Array:
+    """Cost function for minimum distance to walls. Returns 0 at 0.4m, -1 at 0m."""
+    min_distance = jp.min(lidar_ranges)
+    
+    # Linear interpolation: 0 cost at 0.4m, -1 cost at 0m
+    # cost = (0.4 - min_distance) / 0.4
+    # Clamp to ensure cost is between 0 and -1
+    cost = jp.clip((0.4 - min_distance) / 0.4, 0.0, 1.0)
+    
+    return cost
 
 
   def _cost_dist_from_start(self, start_pos: jax.Array, current_pos: jax.Array, last_pos: jax.Array) -> jax.Array:
-    # Reward for being closer to target with configurable shaping to reduce variance
-    dist_change = jp.linalg.norm(current_pos - start_pos) - jp.linalg.norm(last_pos - start_pos)
-    dist_change_norm = dist_change / (self._max_ms * self._config.sim_dt)  # Normalize by max speed and time step
-    return jp.clip(dist_change_norm, 0.0, 1.0)
+    """Penalty for moving closer to start position."""
+    # Calculate change in distance from start
+    last_dist = jp.linalg.norm(last_pos - start_pos)
+    current_dist = jp.linalg.norm(current_pos - start_pos)
+    
+    # Positive when moving toward start (bad), negative when moving away (good)
+    movement_toward_start = last_dist - current_dist
+    
+    # Normalize by max possible movement per step
+    movement_toward_start_norm = movement_toward_start / (self._max_ms * self._config.sim_dt)
+    
+    # Only penalize movement toward start (clip negative values to 0)
+    return jp.clip(movement_toward_start_norm, 0.0, 1.0)
+
 
   def _cost_stability(self, local_feet_pos: jax.Array) -> jax.Array:
     """Fast stability reward using simplified support polygon approximation."""
@@ -1360,6 +1347,47 @@ class CaveExplore(mjx_env.MjxEnv):
     # Future enhancement: track visited positions and reward novel areas
     # This would require adding visited_positions to the info dict and 
     # implementing a spatial hash or grid-based tracking system
+
+  def _reward_wide_stance(self, local_feet_pos: jax.Array) -> jax.Array:
+    """Reward for maintaining a wide stance for better stability.
+    
+    Args:
+        local_feet_pos: Array of shape (n_feet, 3) with foot positions in local coordinates
+        
+    Returns:
+        Reward value that increases with foot spread (wider stance = higher reward)
+    """
+    # Extract x, y coordinates only (ignore z for stance width calculation)
+    feet_xy = local_feet_pos[:, :2]  # Shape: (n_feet, 2)
+    
+    # Calculate pairwise distances between all feet
+    # This gives us the full spread of the stance
+    distances = jp.linalg.norm(feet_xy[:, None] - feet_xy[None, :], axis=2)
+    
+    # Use maximum distance as a measure of stance width
+    # This represents the widest span of the robot's support
+    max_foot_distance = jp.max(distances)
+    
+    # Calculate variance of foot positions as another measure of spread
+    # Higher variance = feet are more spread out
+    feet_center = jp.mean(feet_xy, axis=0)
+    distances_from_center = jp.linalg.norm(feet_xy - feet_center, axis=1)
+    stance_spread = jp.std(distances_from_center)
+    
+    # Combine both measures: max distance (overall width) and spread variance
+    # Normalize by characteristic robot dimensions
+    characteristic_length = 0.4  # typical maximum foot spacing for this robot
+    normalized_max_distance = max_foot_distance / characteristic_length
+    normalized_spread = stance_spread / (characteristic_length * 0.5)
+    
+    # Weighted combination - prioritize maximum width but also reward even distribution
+    stance_quality = 0.7 * normalized_max_distance + 0.3 * normalized_spread
+    
+    # Apply smooth saturation - reward plateaus for very wide stances to avoid over-extension
+    # Using tanh to provide diminishing returns for extremely wide stances
+    reward = jp.tanh(stance_quality * 2.0)  # Scale factor of 2.0 for good responsiveness
+    
+    return reward
 
   def _cost_joint_pos_limits(self, qpos: jax.Array) -> jax.Array:
     # Penalize joints if they cross soft limits.

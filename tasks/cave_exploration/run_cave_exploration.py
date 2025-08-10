@@ -23,7 +23,7 @@ print("=== STARTING CAVE EXPLORATION RL TRAINING ===")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 # GPU configuration
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 # Configure JAX GPU memory settings BEFORE importing jax - OPTIMIZED FOR 40GB A100
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.985'  # Use 98.5% of GPU memory (~39.4GB out of 40GB)
@@ -159,9 +159,9 @@ def configure_environment():
     env_cfg.reward_config.scales.inactivity = -0.1
     
     # Target-based rewards
-    env_cfg.reward_config.scales.distance_from_start = -0.1
-    env_cfg.reward_config.scales.track_lidar_direction = 1.0
-    env_cfg.reward_config.scales.stability = -0.5
+    env_cfg.reward_config.scales.distance_from_start = -1
+    env_cfg.reward_config.scales.track_lidar_direction = 0.5
+    env_cfg.reward_config.scales.stability = -5
     env_cfg.reward_config.scales.exploration_rate = 0.0
 
     
@@ -176,9 +176,9 @@ def configure_ppo_parameters():
     ppo_training_params = dict(ppo_params)
     
     # Modify params for training
-    ppo_training_params["num_timesteps"] = 1_000_000  # 50 million timesteps
+    ppo_training_params["num_timesteps"] = 50_000_000  # 50 million timesteps
     ppo_training_params["episode_length"] = 5000
-    ppo_training_params["num_envs"] = 4096
+    ppo_training_params["num_envs"] = 2048
     ppo_training_params["batch_size"] = 256
     ppo_training_params["num_minibatches"] = 32
     ppo_training_params["num_updates_per_batch"] = 4
@@ -371,26 +371,9 @@ def trainModel(ppo_params_input:dict, env_cfg):
             **ppo_params.network_factory
         )
     
-    # Create wrapper for cave data logging (example of how to access current cave info)
-    def log_cave_info_wrapper(progress_fn):
-        """Wrapper that adds cave information logging to the progress function."""
-        def wrapped_progress(num_steps, metrics):
-            # Call original progress function
-            progress_fn(num_steps, metrics)
-            
-            # Example: Log domain randomization info every 1000 steps
-            if num_steps % 1000 == 0 and num_steps > 0:
-                dr_info = env.get_domain_randomization_info()
-                print(f"Domain Randomization Info at step {num_steps}:")
-                print(f"  Enabled: {dr_info['enabled']}")
-                print(f"  Number of caves: {dr_info['num_caves']}")
-                if dr_info['enabled']:
-                    print(f"  Max boxes per cave: {dr_info['max_boxes']}")
-                    
-        return wrapped_progress
+
     
     # Wrap the progress function to include cave logging
-    progress_with_cave_logging = log_cave_info_wrapper(progress)
     def policy_params_fn(current_step, make_policy, params):
         del make_policy  # Unused.
         orbax_checkpointer = ocp.PyTreeCheckpointer()
@@ -405,7 +388,7 @@ def trainModel(ppo_params_input:dict, env_cfg):
         ppo.train, 
         **dict(ppo_params_input),
         network_factory=network_factory,
-        progress_fn=progress_with_cave_logging,  # Use wrapped progress function
+        progress_fn=progress,  # Use wrapped progress function
         policy_params_fn=policy_params_fn,
         randomization_fn=cave_domain_randomize,  # Add cave domain randomization
         max_devices_per_host=1,

@@ -60,7 +60,7 @@ def create_cave_domain_randomizer(cave_data_arrays: dict, max_boxes: int = 7500)
             
             # Update all cave wall geometry positions at once
             geom_pos = geom_pos.at[cave_wall_geom_ids].set(new_positions)
-            jax.debug.print("Domain randomization applied with {num_boxes} boxes", num_boxes=num_wanted_boxes)
+            #jax.debug.print("Domain randomization applied with {num_boxes} boxes", num_boxes=num_wanted_boxes)
             
             return geom_pos
         

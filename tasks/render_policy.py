@@ -1,91 +1,129 @@
 
+#!/usr/bin/env python3
+"""
+Render Policy Script for Cave Exploration
+
+This script renders videos from trained cave exploration policies,
+updated to work with the new CaveBatchLoader system.
+"""
+
 import mujoco
 import os
 import sys
 import imageio
-
-# Add the project root to the Python path to resolve module imports
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-import jax
-from etils import epath
+import json
 import functools
+from datetime import datetime
 
+# Add project root to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from brax.training.agents.ppo import networks as ppo_networks
-from brax.training.agents.ppo import train as ppo
-from brax.training.agents.ppo import train as ppo
-from brax.training.agents.ppo import networks as ppo_networks
-from brax.io import model
-from jax import numpy as jp
-
-#jax.config.update("jax_debug_nans", True)
-jax.config.update("jax_debug_infs", True)
-
-#from reachbot.getup import default_config as reachbot_getup_config
-#from reachbot.getup import Getup as ReachbotGetup
-#from reachbot.joystick import Joystick as ReachbotJoystick
-#from reachbot.joystick import default_config as reachbot_joystick_config
+# GPU configuration (match run_cave_exploration.py)
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.985'
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 import jax
+from jax import numpy as jp
+from brax.training.agents.ppo import networks as ppo_networks
+from brax.training.agents.ppo import train as ppo
+from brax.io import model
 from mujoco_playground import wrapper
 from mujoco_playground.config import locomotion_params
-
 from ml_collections import config_dict
+
+# Task-specific imports (match run_cave_exploration.py)
+from tasks.cave_exploration.cave_exploration import CaveExplore, default_config as reachbot_config
+from tasks.cave_exploration.environment.env_loader import CaveBatchLoader
+from models.model_loader import ReachbotModelType
+
+# JAX configuration
+jax.config.update('jax_enable_x64', False)
+jax.config.update('jax_traceback_filtering', 'off')
+jax.config.update("jax_debug_infs", True)
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-relative_ckpt_path = "cave_exploration/logs/cave_exploration-2025-07-15_09-13-47"
-
+# Updated to use the latest training run - modify this path as needed
+relative_ckpt_path = "cave_exploration/logs/cave_exploration-2025-08-10_15-08-01"
 ckpt_path = os.path.join(script_dir, relative_ckpt_path)
 
+print(f"Loading checkpoint from: {ckpt_path}")
+
+# Ensure the checkpoint path exists
+if not os.path.exists(ckpt_path):
+    print(f"Error: Checkpoint path does not exist: {ckpt_path}")
+    print("Available training runs:")
+    logs_dir = os.path.join(script_dir, "../../logs")
+    if os.path.exists(logs_dir):
+        for run in sorted(os.listdir(logs_dir)):
+            if run.startswith("cave_exploration-"):
+                print(f"  {run}")
+    exit(1)
 
 
-# Get the configuration for the environment
-import json
+
+# Load configuration from the checkpoint
 with open(os.path.join(ckpt_path, 'config.json'), 'r') as f:
     loaded_config = json.load(f)
-# Get the default environment configuration (a ConfigDict).
-if 'joystick' in relative_ckpt_path:
-    print('Rendering joystick task result')
-    env_cfg = reachbot_joystick_config()
-elif 'getup' in relative_ckpt_path:
-    print('Rendering getup task result')
-    env_cfg = reachbot_getup_config()
-elif 'cave_exploration' in relative_ckpt_path:
-    print('Rendering cave exploration task result')
-    from tasks.cave_exploration.cave_exploration import default_config as cave_exploration_config
-    env_cfg = cave_exploration_config()
-else:
-    print('Unknown task')
-    exit()
-# Convert the loaded dict to a ConfigDict
+
+print('Rendering cave exploration task result')
+
+# Get the default environment configuration and update with saved config
+env_cfg = reachbot_config()
 json_env_cfg = config_dict.ConfigDict(loaded_config['env_cfg'])
-# Update the default config with the values from the JSON.
 env_cfg.update(json_env_cfg)
 
-if 'joystick' in relative_ckpt_path:
-    env = ReachbotJoystick(config=env_cfg, task="rough_terrain_basic")
-elif 'getup' in relative_ckpt_path:
-    env = ReachbotGetup(config=env_cfg, task="flat_terrain_basic")
-elif 'cave_exploration' in relative_ckpt_path:
-    from tasks.cave_exploration.cave_exploration import CaveExplore
-    env = CaveExplore(config=env_cfg)
-    print(env.mj_model.actuator_ctrlrange)
-    print(env.mj_model.actuator_ctrllimited)
-    print(env.mjx_model.actuator_ctrlrange)
-    print(env.mjx_model.actuator_ctrllimited)
+# Create CaveBatchLoader to properly load cave environments (like in run_cave_exploration.py)
+print("Loading cave environments with CaveBatchLoader...")
+cave_batch_loader = CaveBatchLoader(env_cfg, ReachbotModelType.BASIC)
+
+# Print dataset summary
+dataset_summary = cave_batch_loader.get_dataset_summary()
+print(f"\nDataset Summary:")
+print(f"  Total caves: {dataset_summary['total_caves']}")
+print(f"  Training caves: {dataset_summary['training_caves']['count']}")
+print(f"  Evaluation caves: {dataset_summary['eval_caves']['count']}")
+
+# Get evaluation scene data for rendering (use eval caves for consistent results)
+eval_scene_data = cave_batch_loader.get_eval_scene_data()
+eval_cave_ids = list(eval_scene_data["caves"].keys())
+
+# Create environment for rendering - use eval environment without domain randomization
+env = CaveExplore(
+    config=env_cfg, 
+    scene_data=eval_scene_data, 
+    scene_type="eval",
+    domain_randomization_enabled=False
+)
+
+# Select a specific cave for rendering (use first eval cave)
+selected_cave_id = eval_cave_ids[0]
+env.select_cave_environment(selected_cave_id)
+
+print(f"Environment setup completed:")
+print(f"  Using evaluation cave: {selected_cave_id}")
+print(f"  Available eval caves: {eval_cave_ids}")
+print(f"  Domain randomization: Disabled (for consistent rendering)")
 
 
-
-# Get the PPO configuration
-ppo_params = locomotion_params.brax_ppo_config('Go1JoystickFlatTerrain')
+# Get the PPO configuration (match run_cave_exploration.py)
+ENV_STR = 'Go1JoystickFlatTerrain'
+ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
 ppo_training_params = dict(ppo_params)
 ppo_training_params['num_timesteps'] = 0
+ppo_training_params['num_envs'] = 2 
 
-# Getting the network configuration for the policy
+print("Network setup:")
+print(f"  Input layer size (observation): {env.observation_size}")
+print(f"  Output layer size (action): {env.action_size}")
+
+# Network factory setup (match run_cave_exploration.py approach)
+network_factory = ppo_networks.make_ppo_networks(
+    observation_size=env.observation_size, 
+    action_size=env.action_size
+)
+
 if "network_factory" in ppo_params:
     if "network_factory" in ppo_training_params:
         del ppo_training_params["network_factory"]
@@ -94,81 +132,210 @@ if "network_factory" in ppo_params:
         **ppo_params.network_factory
     )
 
-
-# Building the training function based on the ppo parameters
+# Building the training function for inference setup
 train_fn = functools.partial(
-    ppo.train, **dict(ppo_training_params),
+    ppo.train, 
+    **dict(ppo_training_params),
     network_factory=network_factory,
 )
 
 # Building the inference function
+print("Building inference function...")
 make_inference_fn, params, _ = train_fn(
     environment=env,
     num_timesteps=0,
     wrap_env_fn=wrapper.wrap_for_brax_training
 )
 
-# Load the trained model
-params = model.load_params(os.path.join(ckpt_path,'params'))
+# Load the trained model parameters
+params_path = os.path.join(ckpt_path, 'params')
+print(f"Loading trained parameters from: {params_path}")
+params = model.load_params(params_path)
 
-# Jit everything
+# Setup JIT compiled functions for inference (match run_cave_exploration.py)
+print("Setting up JIT compiled functions...")
 jit_reset = jax.jit(env.reset)
 jit_step = jax.jit(env.step)
-jit_inference_fn = jax.jit(make_inference_fn(params, deterministic=True))
+inference_fn = make_inference_fn(params, deterministic=True)
+jit_inference_fn = jax.jit(inference_fn)
 
-# Reset the environment
-rng = jax.random.PRNGKey(3)
-rollout = []
-n_episodes = 3
-episode_length = 5000
-
-
-# Rollout policy and record simulation
-
-print(f"Running rollout for {n_episodes} episode(s) with {episode_length} steps each...")
-for episode in range(n_episodes):
-    episode_reward = 0.0
-    print(f"Episode {episode + 1}/{n_episodes}")
-    state = jit_reset(rng)
-    rollout.append(state)
-    for i in range(episode_length):
-        if i % 500 == 0:
-            print(f"  Step {i}/{episode_length}")
-            
-        act_rng, rng = jax.random.split(rng)
-        ctrl, _ = jit_inference_fn(state.obs, act_rng)
+def render_episodes():
+    """Render episodes with the trained policy (function similar to create_videos in run_cave_exploration.py)"""
+    print("=== RENDERING EPISODES ===")
+    
+    # Rollout parameters (match run_cave_exploration.py)
+    rng = jax.random.PRNGKey(0)  # Use seed 0 for reproducible results
+    n_episodes = 1
+    rollout_steps = 5000
+    
+    # Set this to True to enable detailed logging of state info and rewards
+    ENABLE_DETAILED_LOGGING = True
+    
+    print(f"Running rollout for {n_episodes} episode(s) with {rollout_steps} steps each...")
+    print(f"Selected cave for rendering: {selected_cave_id}")
+    
+    episode_rewards = []
+    
+    # Initialize logging data if enabled
+    if ENABLE_DETAILED_LOGGING:
+        detailed_logs = []
         
-        # Check for numerical issues
-        if jp.any(jp.isinf(ctrl)) or jp.any(jp.isnan(ctrl)):
-            print(f"Numerical issue detected in control at step {i}. Stopping rollout.")
-            break
-            
-        state = jit_step(state, ctrl)
-
-        # Accumulate reward for this episode
-        episode_reward += float(state.reward)
+    for episode in range(n_episodes):
+        print(f"\nEpisode {episode + 1}/{n_episodes}")
+        episode_rng, rng = jax.random.split(rng)
+        state = jit_reset(episode_rng)
+        rollout = [state]  # Reset rollout for each episode
+        episode_reward = 0.0
+        episode_logs = [] if ENABLE_DETAILED_LOGGING else None
         
-        if state.done:
-            print(f"Episode {episode + 1} ended at step {i} with reward: {episode_reward:.3f}")
-            break
+        # Log initial state if detailed logging is enabled
+        if ENABLE_DETAILED_LOGGING:
+            frame_data = {
+                'episode': episode,
+                'step': 0,
+                'reward': float(state.reward),
+                'cumulative_reward': episode_reward,
+                'done': bool(state.done),
+                'cave_id': selected_cave_id,
+                'info': {}
+            }
+            # Convert state.info to regular Python types for JSON serialization
+            for key, value in state.info.items():
+                if hasattr(value, 'tolist'):  # JAX arrays
+                    frame_data['info'][key] = value.tolist()
+                elif hasattr(value, 'item'):  # Scalar arrays
+                    frame_data['info'][key] = value.item()
+                else:
+                    frame_data['info'][key] = value
+            episode_logs.append(frame_data)
+        
+        for i in range(rollout_steps):
+            if i % 500 == 0:
+                print(f"  Step {i}/{rollout_steps}, Current reward: {episode_reward:.3f}")
+                
+            act_rng, rng = jax.random.split(episode_rng)
+            ctrl, _ = jit_inference_fn(state.obs, act_rng)
             
-        rollout.append(state)
+            # Check for numerical issues
+            if jp.any(jp.isinf(ctrl)) or jp.any(jp.isnan(ctrl)):
+                print(f"Numerical issue detected in control at step {i}. Stopping rollout.")
+                break
+                
+            state = jit_step(state, ctrl)
+            
+            # Accumulate reward for this episode
+            episode_reward += float(state.reward)
+            
+            # Log detailed state information if enabled
+            if ENABLE_DETAILED_LOGGING:
+                frame_data = {
+                    'episode': episode,
+                    'step': i + 1,
+                    'reward': float(state.reward),
+                    'cumulative_reward': episode_reward,
+                    'done': bool(state.done),
+                    'cave_id': selected_cave_id,
+                    'info': {}
+                }
+                # Convert state.info to regular Python types for JSON serialization
+                for key, value in state.info.items():
+                    if hasattr(value, 'tolist'):  # JAX arrays
+                        frame_data['info'][key] = value.tolist()
+                    elif hasattr(value, 'item'):  # Scalar arrays
+                        frame_data['info'][key] = value.item()
+                    else:
+                        frame_data['info'][key] = value
+                episode_logs.append(frame_data)
+            
+            if state.done:
+                print(f"Episode {episode + 1} ended at step {i} with reward: {episode_reward:.3f}")
+                break
+                
+            rollout.append(state)
+        
+        episode_rewards.append(episode_reward)
+        print(f"Episode {episode + 1} completed with {len(rollout)} states and total reward: {episode_reward:.3f}")
+        
+        if ENABLE_DETAILED_LOGGING:
+            detailed_logs.extend(episode_logs)
 
-    print(f"Rollout completed with {len(rollout)} states")
+        # Save detailed logs for this episode if enabled
+        if ENABLE_DETAILED_LOGGING:
+            log_filename = os.path.join(ckpt_path, f'detailed_logs_episode_{episode}_cave_{selected_cave_id}_reward_{episode_reward:.2f}.json')
+            try:
+                with open(log_filename, 'w') as f:
+                    json.dump(episode_logs, f, indent=2)
+                print(f"Detailed logs saved to {log_filename}")
+            except Exception as e:
+                print(f"Error saving detailed logs: {e}")
+                # Fallback: save as text file
+                txt_filename = os.path.join(ckpt_path, f'detailed_logs_episode_{episode}_cave_{selected_cave_id}_reward_{episode_reward:.2f}.txt')
+                with open(txt_filename, 'w') as f:
+                    for frame in episode_logs:
+                        f.write(f"Episode: {frame['episode']}, Step: {frame['step']}, "
+                               f"Reward: {frame['reward']:.6f}, Cumulative: {frame['cumulative_reward']:.6f}, "
+                               f"Done: {frame['done']}, Cave: {frame['cave_id']}\n")
+                        f.write(f"Info: {frame['info']}\n\n")
+                print(f"Detailed logs saved as text to {txt_filename}")
 
-    # Render video
-    print("Rendering video...")
-    render_every = 1  # Render every frame
-    width = 1920      # Full HD width
-    height = 1080     # Full HD height
+        # Render video (match run_cave_exploration.py approach)
+        print("Rendering video...")
+        render_every = 1  # Render every frame
+        width = 1920      # Full HD width
+        height = 1080     # Full HD height
 
-    frames = env.render(rollout[::render_every], camera='track_global', width=width, height=height)
-    print(f"Rendered {len(frames)} frames")
+        frames = env.render(rollout[::render_every], camera='track_global', width=width, height=height)
+        print(f"Rendered {len(frames)} frames")
 
-    # Save video
-    video_path = os.path.join(relative_ckpt_path, f'posttraining_{episode_reward:.2f}.mp4')
-    fps = 1.0 / env.dt
+        # Save video
+        video_path = os.path.join(ckpt_path, f'render_episode_{episode}_cave_{selected_cave_id}_reward_{episode_reward:.1f}.mp4')
+        fps = 1.0 / env.dt
 
-    print(f"Saving video to {video_path} at {fps} FPS...")
-    imageio.mimsave(video_path, frames, fps=fps)
-    print(f"Video saved successfully to {video_path}")
+        print(f"Saving video to {video_path} at {fps} FPS...")
+        imageio.mimsave(video_path, frames, fps=fps)
+        print(f"Video saved successfully: Episode {episode + 1}, Reward: {episode_reward:.3f}")
+
+    # Save comprehensive detailed logs for all episodes if enabled
+    if ENABLE_DETAILED_LOGGING and 'detailed_logs' in locals():
+        comprehensive_log_filename = os.path.join(ckpt_path, f'detailed_logs_all_episodes_cave_{selected_cave_id}.json')
+        try:
+            with open(comprehensive_log_filename, 'w') as f:
+                json.dump(detailed_logs, f, indent=2)
+            print(f"Comprehensive detailed logs for all episodes saved to {comprehensive_log_filename}")
+        except Exception as e:
+            print(f"Error saving comprehensive detailed logs: {e}")
+            # Fallback: save as text file
+            txt_filename = os.path.join(ckpt_path, f'detailed_logs_all_episodes_cave_{selected_cave_id}.txt')
+            with open(txt_filename, 'w') as f:
+                for frame in detailed_logs:
+                    f.write(f"Episode: {frame['episode']}, Step: {frame['step']}, "
+                           f"Reward: {frame['reward']:.6f}, Cumulative: {frame['cumulative_reward']:.6f}, "
+                           f"Done: {frame['done']}, Cave: {frame['cave_id']}\n")
+                    f.write(f"Info: {frame['info']}\n\n")
+            print(f"Comprehensive detailed logs saved as text to {txt_filename}")
+    
+    # Print summary of all episodes (match run_cave_exploration.py)
+    print("\n=== EPISODE REWARD SUMMARY ===")
+    for i, reward in enumerate(episode_rewards):
+        print(f"Episode {i + 1}: {reward:.3f}")
+    print(f"Average reward: {sum(episode_rewards)/len(episode_rewards):.3f}")
+    print(f"Best episode: {episode_rewards.index(max(episode_rewards)) + 1} with reward {max(episode_rewards):.3f}")
+    print(f"Worst episode: {episode_rewards.index(min(episode_rewards)) + 1} with reward {min(episode_rewards):.3f}")
+    print(f"Cave used for rendering: {selected_cave_id}")
+    
+    return episode_rewards
+
+# Run the rendering
+if __name__ == '__main__':
+    print("🎬 Starting Cave Exploration Policy Rendering")
+    print(f"📅 Start time: {datetime.now()}")
+    
+    try:
+        episode_rewards = render_episodes()
+        print("✅ Rendering completed successfully!")
+        
+    except Exception as e:
+        print(f"❌ Error occurred during rendering: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
