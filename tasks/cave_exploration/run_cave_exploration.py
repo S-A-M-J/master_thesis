@@ -23,7 +23,7 @@ print("=== STARTING CAVE EXPLORATION RL TRAINING ===")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 # GPU configuration
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 # Configure JAX GPU memory settings BEFORE importing jax - OPTIMIZED FOR 40GB A100
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.985'  # Use 98.5% of GPU memory (~39.4GB out of 40GB)
@@ -140,6 +140,7 @@ def configure_environment():
     # Basic simulation parameters
     env_cfg.sim_dt = 0.004
     env_cfg.action_scale = 1
+    env_cfg.stickiness_config.enable = True  # Enable stickiness forces
     
     # PID control parameters
     env_cfg.Kp_pri = 60.0
@@ -148,9 +149,12 @@ def configure_environment():
     env_cfg.Kd_rot = 2.0
     
     env_cfg.noise_config.level = 0.0
+
+    env_cfg.reward_config.scales.track_lidar_direction = 0.5
+    env_cfg.reward_config.scales.wide_stance = 0.05  
     
     # Reward scaling configuration
-    env_cfg.reward_config.scales.orientation = -0.5
+    env_cfg.reward_config.scales.orientation = -1.0
     env_cfg.reward_config.scales.torques = 0.0
     env_cfg.reward_config.scales.action_rate = 0.0
     env_cfg.reward_config.scales.dof_pos_limits = 0.0
@@ -160,8 +164,7 @@ def configure_environment():
     
     # Target-based rewards
     env_cfg.reward_config.scales.distance_from_start = -1
-    env_cfg.reward_config.scales.track_lidar_direction = 0.5
-    env_cfg.reward_config.scales.stability = -5
+    env_cfg.reward_config.scales.stability = -0.3
     env_cfg.reward_config.scales.exploration_rate = 0.0
 
     
@@ -174,18 +177,17 @@ def configure_ppo_parameters():
     
     ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
     ppo_training_params = dict(ppo_params)
-    
     # Modify params for training
     ppo_training_params["num_timesteps"] = 50_000_000  # 50 million timesteps
     ppo_training_params["episode_length"] = 5000
-    ppo_training_params["num_envs"] = 2048
+    ppo_training_params["num_envs"] = 1024
     ppo_training_params["batch_size"] = 256
     ppo_training_params["num_minibatches"] = 32
     ppo_training_params["num_updates_per_batch"] = 4
-    ppo_training_params["unroll_length"] = 64
-    ppo_training_params["entropy_cost"] = 1e-2
+    ppo_training_params["unroll_length"] = 256
+    ppo_training_params["entropy_cost"] = 0.02
     ppo_training_params["learning_rate"] = 3e-4
-    ppo_training_params["discounting"] = 0.995
+    ppo_training_params["discounting"] = 0.999
     ppo_training_params["num_evals"] = ppo_training_params["num_timesteps"] // 10_000_000
     if (ppo_training_params["num_evals"] < 10):
         ppo_training_params["num_evals"] = 10
@@ -254,8 +256,6 @@ def trainModel(ppo_params_input:dict, env_cfg):
     print(f"\nEnvironment creation completed:")
     print(f"  Training environment: Domain randomization with {len(training_cave_ids)} caves")
     print(f"  Evaluation environment: Cave {selected_eval_cave_id}")
-    print(f"  Training caves available: {training_cave_ids}")
-    print(f"  Evaluation caves available: {eval_cave_ids}")
 
     # Setup domain randomization for cave environments
     print("\n=== SETTING UP CAVE DOMAIN RANDOMIZATION ===")
@@ -460,7 +460,7 @@ def trainModel(ppo_params_input:dict, env_cfg):
     # Store these variables for the video generation
     trained_params = params
     trained_make_inference_fn = make_inference_fn
-    trained_env = env
+    trained_env = eval_env
     trained_logdir = logdir
     
     # Free up training memory before rendering

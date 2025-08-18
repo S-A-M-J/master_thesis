@@ -45,7 +45,7 @@ jax.config.update("jax_debug_infs", True)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # Updated to use the latest training run - modify this path as needed
-relative_ckpt_path = "cave_exploration/logs/cave_exploration-2025-08-10_15-08-01"
+relative_ckpt_path = "cave_exploration/logs/cave_exploration-2025-08-17_00-19-56"
 ckpt_path = os.path.join(script_dir, relative_ckpt_path)
 
 print(f"Loading checkpoint from: {ckpt_path}")
@@ -73,6 +73,7 @@ print('Rendering cave exploration task result')
 env_cfg = reachbot_config()
 json_env_cfg = config_dict.ConfigDict(loaded_config['env_cfg'])
 env_cfg.update(json_env_cfg)
+env_cfg.randomize_starting_pos = True  # Enable random starting position for rendering
 
 # Create CaveBatchLoader to properly load cave environments (like in run_cave_exploration.py)
 print("Loading cave environments with CaveBatchLoader...")
@@ -165,8 +166,8 @@ def render_episodes():
     
     # Rollout parameters (match run_cave_exploration.py)
     rng = jax.random.PRNGKey(0)  # Use seed 0 for reproducible results
-    n_episodes = 1
-    rollout_steps = 5000
+    n_episodes = 5
+    rollout_steps = 3000
     
     # Set this to True to enable detailed logging of state info and rewards
     ENABLE_DETAILED_LOGGING = True
@@ -197,7 +198,8 @@ def render_episodes():
                 'cumulative_reward': episode_reward,
                 'done': bool(state.done),
                 'cave_id': selected_cave_id,
-                'info': {}
+                'info': {},
+                'individual_rewards': {}
             }
             # Convert state.info to regular Python types for JSON serialization
             for key, value in state.info.items():
@@ -207,6 +209,16 @@ def render_episodes():
                     frame_data['info'][key] = value.item()
                 else:
                     frame_data['info'][key] = value
+            
+            # Extract individual reward components from state.metrics
+            for key, value in state.metrics.items():
+                if key.startswith('reward/'):
+                    reward_name = key[7:]  # Remove 'reward/' prefix
+                    if hasattr(value, 'item'):  # Scalar arrays
+                        frame_data['individual_rewards'][reward_name] = float(value.item())
+                    else:
+                        frame_data['individual_rewards'][reward_name] = float(value)
+            
             episode_logs.append(frame_data)
         
         for i in range(rollout_steps):
@@ -235,7 +247,8 @@ def render_episodes():
                     'cumulative_reward': episode_reward,
                     'done': bool(state.done),
                     'cave_id': selected_cave_id,
-                    'info': {}
+                    'info': {},
+                    'individual_rewards': {}
                 }
                 # Convert state.info to regular Python types for JSON serialization
                 for key, value in state.info.items():
@@ -245,6 +258,16 @@ def render_episodes():
                         frame_data['info'][key] = value.item()
                     else:
                         frame_data['info'][key] = value
+                
+                # Extract individual reward components from state.metrics
+                for key, value in state.metrics.items():
+                    if key.startswith('reward/'):
+                        reward_name = key[7:]  # Remove 'reward/' prefix
+                        if hasattr(value, 'item'):  # Scalar arrays
+                            frame_data['individual_rewards'][reward_name] = float(value.item())
+                        else:
+                            frame_data['individual_rewards'][reward_name] = float(value)
+                
                 episode_logs.append(frame_data)
             
             if state.done:
@@ -275,7 +298,10 @@ def render_episodes():
                         f.write(f"Episode: {frame['episode']}, Step: {frame['step']}, "
                                f"Reward: {frame['reward']:.6f}, Cumulative: {frame['cumulative_reward']:.6f}, "
                                f"Done: {frame['done']}, Cave: {frame['cave_id']}\n")
-                        f.write(f"Info: {frame['info']}\n\n")
+                        f.write(f"Info: {frame['info']}\n")
+                        if 'individual_rewards' in frame and frame['individual_rewards']:
+                            f.write(f"Individual Rewards: {frame['individual_rewards']}\n")
+                        f.write("\n")
                 print(f"Detailed logs saved as text to {txt_filename}")
 
         # Render video (match run_cave_exploration.py approach)
@@ -311,7 +337,10 @@ def render_episodes():
                     f.write(f"Episode: {frame['episode']}, Step: {frame['step']}, "
                            f"Reward: {frame['reward']:.6f}, Cumulative: {frame['cumulative_reward']:.6f}, "
                            f"Done: {frame['done']}, Cave: {frame['cave_id']}\n")
-                    f.write(f"Info: {frame['info']}\n\n")
+                    f.write(f"Info: {frame['info']}\n")
+                    if 'individual_rewards' in frame and frame['individual_rewards']:
+                        f.write(f"Individual Rewards: {frame['individual_rewards']}\n")
+                    f.write("\n")
             print(f"Comprehensive detailed logs saved as text to {txt_filename}")
     
     # Print summary of all episodes (match run_cave_exploration.py)

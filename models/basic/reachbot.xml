@@ -1,7 +1,5 @@
 <?xml version="1.0"?>
 <!-- Reachbot Mujoco model with 4 arms and no deflection of booms-->
-<!-- Based on Reachbot Models by Bear Tolson @Stanford BDML -->
-<!-- Updated by Samuel Jahn @Stanford BDML -->
 
 <!-- Set jacobian to sparse for tpu and dense for gpu. For more info go to mujoco xla page-->
 <mujoco model="reachbot">
@@ -53,12 +51,6 @@
   </asset>
   <worldbody>
     <body name="Basis" pos="0 0 0.5">
-      <!-- X axis (red) -->
-      <!-- <geom name="x_axis" fromto="0 0 0 0.1 0 0" type="capsule" size="0.005" rgba="1 0 0 1" contype="0" conaffinity="0"/> -->
-      <!-- Y axis (green) -->
-      <!-- <geom name="y_axis" fromto="0 0 0 0 0.1 0" type="capsule" size="0.005" rgba="0 1 0 1" contype="0" conaffinity="0"/> -->
-      <!-- Z axis (blue) -->
-      <!-- <geom name="z_axis" fromto="0 0 0 0 0 0.1" type="capsule" size="0.005" rgba="0 0 1 1" contype="0" conaffinity="0"/> -->
     </body>
     <light directional="true" pos="0 0 5" dir="0 0 -1"/>
     <body name="mainBody" pos="0 0 0.5">

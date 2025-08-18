@@ -1,6 +1,4 @@
 <!-- Reachbot Mujoco model with 4 arms and no deflection of booms-->
-<!-- Based on Reachbot Models by Bear Tolson @Stanford BDML -->
-<!-- Updated by Samuel Jahn @Stanford BDML -->
 
 
 <body name="Base1" pos="0 0 0">
