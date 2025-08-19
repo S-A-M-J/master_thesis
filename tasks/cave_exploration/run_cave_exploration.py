@@ -180,14 +180,14 @@ def configure_ppo_parameters():
     # Modify params for training
     ppo_training_params["num_timesteps"] = 50_000_000  # 50 million timesteps
     ppo_training_params["episode_length"] = 5000
-    ppo_training_params["num_envs"] = 1024
+    ppo_training_params["num_envs"] = 2048
     ppo_training_params["batch_size"] = 256
     ppo_training_params["num_minibatches"] = 32
     ppo_training_params["num_updates_per_batch"] = 4
-    ppo_training_params["unroll_length"] = 256
+    ppo_training_params["unroll_length"] = 64
     ppo_training_params["entropy_cost"] = 0.02
     ppo_training_params["learning_rate"] = 3e-4
-    ppo_training_params["discounting"] = 0.999
+    ppo_training_params["discounting"] = 0.995
     ppo_training_params["num_evals"] = ppo_training_params["num_timesteps"] // 10_000_000
     if (ppo_training_params["num_evals"] < 10):
         ppo_training_params["num_evals"] = 10
