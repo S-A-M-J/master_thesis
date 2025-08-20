@@ -178,7 +178,7 @@ def configure_ppo_parameters():
     ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
     ppo_training_params = dict(ppo_params)
     # Modify params for training
-    ppo_training_params["num_timesteps"] = 50_000_000  # 50 million timesteps
+    ppo_training_params["num_timesteps"] = 20_000_000  # 50 million timesteps
     ppo_training_params["episode_length"] = 5000
     ppo_training_params["num_envs"] = 2048
     ppo_training_params["batch_size"] = 256

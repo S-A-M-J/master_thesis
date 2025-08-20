@@ -1514,20 +1514,28 @@ class CaveExplore(mjx_env.MjxEnv):
     # This gives us the full spread of the stance
     distances = jp.linalg.norm(feet_xy[:, None] - feet_xy[None, :], axis=2)
     
-    # Get unique distances (exclude diagonal zeros and duplicates due to symmetry)
-    # Extract upper triangular part to avoid duplicates
-    upper_triangle_mask = jp.triu(jp.ones_like(distances, dtype=bool), k=1)
-    unique_distances = distances[upper_triangle_mask]  # For 4 feet, this gives 6 unique distances
+    # Get unique distances by masking out diagonal and lower triangle
+    # Create a mask for upper triangle (k=1 excludes diagonal)
+    n_feet = distances.shape[0]
+    i_indices = jp.arange(n_feet)[:, None]
+    j_indices = jp.arange(n_feet)[None, :]
+    upper_mask = j_indices > i_indices
     
-    # Get average of top 3 unique distances as a measure of stance width
-    top_3_indices = jp.argsort(unique_distances)[-3:]  # Get indices of 3 largest values
-    top_3_distances = unique_distances[top_3_indices]
-    avg_top_3_distance = jp.mean(top_3_distances)
+    # Use jnp.where to extract only upper triangular distances
+    # Pad with zeros where mask is False to maintain fixed size
+    masked_distances = jp.where(upper_mask, distances, 0.0)
+    
+    # Sum all non-zero distances and count them
+    total_distance = jp.sum(masked_distances)
+    count_distances = jp.sum(upper_mask)
+    
+    # Calculate average distance (avoid division by zero)
+    avg_distance = jp.where(count_distances > 0, total_distance / count_distances, 0.0)
     
     # Combine both measures: avg top 3 distances (overall width) and spread variance
     # Normalize by characteristic robot dimensions
     characteristic_length = 0.8  # typical maximum foot spacing for this robot
-    normalized_avg_distance = avg_top_3_distance / characteristic_length
+    normalized_avg_distance = avg_distance / characteristic_length
     # Weighted combination - prioritize average top distances but also reward even distribution
     stance_quality = normalized_avg_distance
 
