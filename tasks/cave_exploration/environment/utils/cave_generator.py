@@ -20,7 +20,11 @@ def create_dent(theta, radius, dent_center=np.pi, dent_width=np.pi/2, dent_depth
     
     return r
 
-def generate_cave_tunnel(curve_intensity=0.5):
+def generate_cave_tunnel(curve_intensity=0.5, seed=None):
+    # Set random seed for reproducible generation
+    if seed is not None:
+        np.random.seed(seed)
+    
     # Parameters
     length = 20.0  # meters
     radius = 1.5  # meters
@@ -184,8 +188,12 @@ def save_cave_config(voxels, voxel_size, filename, cave_params, cave_id=None):
     
     return len(voxels)
 
-def create_cave(cave_id, output_dir, curve_intensity=0.5, voxel_size=0.2):
+def create_cave(cave_id, output_dir, curve_intensity=0.5, voxel_size=0.2, seed=None):
     """Create a single cave and save to the specified directory"""
+    # Set random seed for reproducible generation
+    if seed is not None:
+        np.random.seed(seed)
+    
     # Parameters to save
     cave_params = {}
     
@@ -207,11 +215,12 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5, voxel_size=0.2):
         "offset_magnitude": offset_magnitude,
         "num_dents": num_dents,
         "curve_intensity": curve_intensity,
-        "voxel_size": voxel_size
+        "voxel_size": voxel_size,
+        "seed": seed
     }
     
     # Generate the original mesh with the parameters
-    cave_mesh = generate_cave_tunnel(curve_intensity)
+    cave_mesh = generate_cave_tunnel(curve_intensity, seed)
     #print(f"Cave {cave_id} - Original mesh - Vertex count: {len(cave_mesh.vertices)}")
     #print(f"Cave {cave_id} - Original mesh - Face count: {len(cave_mesh.faces)}")
     
@@ -357,7 +366,9 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5, voxel_size=0.2):
         
         # Calculate starting positions for x steps 0 to 15
         starting_positions = []
-        for x_step in range(170):  # 0 to 180. 0 to 18 meters in to the cave
+        # Number of segments in the cave x direction
+        num_cave_segments = int(np.ceil(length / voxel_size))
+        for x_step in range(num_cave_segments - 3):  # 0 to num_cave_segments
             # Convert x step to actual x coordinate in voxel space
             x_coord = x_step
             
@@ -384,9 +395,6 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5, voxel_size=0.2):
                     "z": float((z_min + 2) * voxel_size)
                 }
                 starting_positions.append(start_pos)
-            else:
-                # No voxels at this x coordinate, skip
-                starting_positions.append(None)
         
         # Save starting positions
         cave_params["starting_pos"] = starting_positions
@@ -459,6 +467,7 @@ if __name__ == "__main__":
         help="Base output directory for caves (default: ../caves relative to this script)"
     )
     parser.add_argument("--voxel-size", type=float, default=0.2, help="Voxel size in meters (default: 0.2)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible generation (default: 42)")
     args = parser.parse_args()
     
     # Create base caves directory if it doesn't exist
@@ -467,6 +476,9 @@ if __name__ == "__main__":
     # Generate multiple caves
     caves_summary = []
     
+    # Set initial seed for global randomness
+    np.random.seed(args.seed)
+    
     for i in tqdm(range(args.count), desc="Generating caves", unit="cave"):
         cave_id = i + 1
         
@@ -474,24 +486,39 @@ if __name__ == "__main__":
         cave_dir = os.path.join(args.output_dir, f"cave_{cave_id:03d}")
         os.makedirs(cave_dir, exist_ok=True)
         
-        # Generate caves with different curve intensities
+        # Generate deterministic seed for this cave based on base seed and cave id
+        cave_seed = args.seed + cave_id * 1000
+        
+        # Generate caves with different curve intensities using the cave-specific seed
+        np.random.seed(cave_seed)
         curve_intensity = np.random.uniform(0.3, 0.8)  # Random curve intensity for variety
         
         # Generate cave and save files
-        cave_params = create_cave(cave_id, cave_dir, curve_intensity, args.voxel_size)
+        cave_params = create_cave(cave_id, cave_dir, curve_intensity, args.voxel_size, cave_seed)
         
         caves_summary.append({
             "id": cave_id,
             "directory": cave_dir,
             "vertex_count": cave_params["original_mesh"]["vertex_count"],
-            "box_count": cave_params["cave_boxes"]["box_count"]
+            "box_count": cave_params["cave_boxes"]["box_count"],
+            "seed": cave_seed,
+            "curve_intensity": curve_intensity
         })
     
     # Save summary of all caves
     summary_path = os.path.join(args.output_dir, "caves_summary.json")
+    summary_data = {
+        "generation_info": {
+            "base_seed": args.seed,
+            "cave_count": args.count,
+            "voxel_size": args.voxel_size,
+            "generation_time": time.strftime("%Y-%m-%d %H:%M:%S")
+        },
+        "caves": caves_summary
+    }
     with open(summary_path, 'w') as f:
-        json.dump(caves_summary, f, indent=4)
+        json.dump(summary_data, f, indent=4)
     
-    print(f"\nGenerated {args.count} caves with voxel size {args.voxel_size}m. Summary saved to {summary_path}")
+    print(f"\nGenerated {args.count} caves with voxel size {args.voxel_size}m using seed {args.seed}. Summary saved to {summary_path}")
 
 

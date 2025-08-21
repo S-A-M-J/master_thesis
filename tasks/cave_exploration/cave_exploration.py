@@ -519,143 +519,6 @@ class CaveExplore(mjx_env.MjxEnv):
     self._local_ray_directions = jp.stack(local_ray_dirs)
     print(f"Precomputed {len(local_ray_dirs)} LIDAR ray directions")
 
-  def _select_random_env(self, rng: jax.Array) -> Tuple[jax.Array, Dict[str, jax.Array]]:
-    """Select cave index for this reset (JAX-compatible)."""
-    if self._domain_randomization_enabled:
-        # Use domain randomization data
-        self._rng, key = jax.random.split(rng)
-        num_caves = len(self.caveIds)
-        cave_idx = jax.random.randint(key, (), 0, num_caves)
-        env_data_jax = self.get_current_cave_data_from_randomization(cave_idx)
-        return cave_idx, env_data_jax
-    else:
-        # Original behavior for manual cave selection
-        self._rng, key = jax.random.split(rng)
-        num_caves = len(self.caveIds)
-        cave_idx = jax.random.randint(key, (), 0, num_caves)
-        cave_id = self._cave_ids_array[cave_idx]
-        
-        # Get cave data for the selected cave
-        # We need to use the cave_idx to index into our data structures
-        # Since we can't use cave_id (a traced value) as a dictionary key,
-        # we'll prepare all cave data in arrays and index by cave_idx
-        
-        # Convert cave parameters to arrays indexed by cave order
-        starting_pos_arrays = []
-        target_pos_arrays = []
-        voxel_bounds_arrays = []
-        
-        for cave_id_val in self.caveIds:
-            cave_data = self._cave_params[cave_id_val]
-            
-            # Starting positions - pad to same length
-            starting_pos = cave_data["starting_pos"]
-            max_positions = 10  # Assume max 10 starting positions per cave
-            
-            start_x = [pos.get("x", 0.0) if pos is not None else 0.0 for pos in starting_pos] + [0.0] * (max_positions - len(starting_pos))
-            start_y = [pos.get("y", 0.0) if pos is not None else 0.0 for pos in starting_pos] + [0.0] * (max_positions - len(starting_pos))
-            start_z = [pos.get("z", 0.0) if pos is not None else 0.0 for pos in starting_pos] + [0.0] * (max_positions - len(starting_pos))
-            valid_count = len([p for p in starting_pos if p is not None])
-            
-            starting_pos_arrays.append({
-                'x': jp.array(start_x[:max_positions]),
-                'y': jp.array(start_y[:max_positions]), 
-                'z': jp.array(start_z[:max_positions]),
-                'count': jp.array(valid_count)
-            })
-            
-            # Target position - should already be in list format
-            target_pos = cave_data["target_pos"] if cave_data["target_pos"] else [0.0, 0.0, 0.0]
-            target_pos_arrays.append(jp.array(target_pos))
-            
-            # Voxel bounds - should already be in list format
-            voxel_bounds = cave_data["voxel_bounds"] if cave_data["voxel_bounds"] else [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-            voxel_bounds_arrays.append(jp.array(voxel_bounds))
-        
-        # Stack into arrays
-        starting_x_stack = jp.stack([sp['x'] for sp in starting_pos_arrays])
-        starting_y_stack = jp.stack([sp['y'] for sp in starting_pos_arrays])
-        starting_z_stack = jp.stack([sp['z'] for sp in starting_pos_arrays])
-        starting_counts = jp.stack([sp['count'] for sp in starting_pos_arrays])
-        target_stack = jp.stack(target_pos_arrays)
-        voxel_bounds_stack = jp.stack(voxel_bounds_arrays)
-        
-        # Index by cave_idx
-        env_data_jax = {
-            'starting_pos_x': starting_x_stack[cave_idx],
-            'starting_pos_y': starting_y_stack[cave_idx],
-            'starting_pos_z': starting_z_stack[cave_idx],
-            'target_pos': target_stack[cave_idx],
-            'starting_pos_length': starting_counts[cave_idx],
-            'cave_id': cave_id,
-            'voxel_bounds': voxel_bounds_stack[cave_idx]
-        }
-        
-        return cave_idx, env_data_jax
-
-  def get_current_cave_data_from_state(self, state: mjx_env.State) -> Dict[str, Any]:
-    """Get current cave data from the environment state.
-    
-    This method can be used to retrieve cave information after domain randomization
-    has been applied during training.
-    
-    Args:
-        state: The current environment state
-        
-    Returns:
-        Dictionary containing current cave information
-    """
-    info = state.info
-    
-    if self._domain_randomization_enabled:
-        cave_idx = info["cave_idx"]
-        # Convert JAX arrays back to Python types for easier handling
-        cave_data = {
-            "cave_id": int(info["cave_id"]),
-            "cave_idx": int(cave_idx),
-            "target_pos": [float(x) for x in info["target_pos"]],
-            "voxel_bounds": [float(x) for x in info["voxel_bounds"]],
-            "init_pos": [float(x) for x in info["init_pos"]],
-            "domain_randomization_enabled": bool(info["domain_randomization_enabled"])
-        }
-    else:
-        # For manual cave selection
-        cave_data = {
-            "cave_id": int(info["cave_id"]) if "cave_id" in info else self._current_cave_id,
-            "cave_idx": int(info.get("cave_idx", 0)),
-            "target_pos": [float(x) for x in info["target_pos"]],
-            "voxel_bounds": [float(x) for x in info["voxel_bounds"]],
-            "init_pos": [float(x) for x in info["init_pos"]],
-            "domain_randomization_enabled": False
-        }
-    
-    return cave_data
-
-  def get_domain_randomization_info(self) -> Dict[str, Any]:
-    """Get information about domain randomization setup.
-    
-    Returns:
-        Dictionary containing domain randomization information
-    """
-    if not self._domain_randomization_enabled:
-        return {
-            "enabled": False,
-            "num_caves": len(self.caveIds),
-            "cave_ids": self.caveIds
-        }
-    
-    dr_data = self._domain_randomization_data
-    return {
-        "enabled": True,
-        "num_caves": len(self.caveIds),
-        "cave_ids": self.caveIds,
-        "max_boxes": dr_data['max_boxes'].shape[1],
-        "cave_data_shape": {
-            "all_target_positions": dr_data['all_target_positions'].shape,
-            "all_voxel_bounds": dr_data['all_voxel_bounds'].shape,
-            "starting_pos_counts": dr_data['starting_pos_counts'].shape
-        }
-    }
 
 
   @property
@@ -1485,6 +1348,22 @@ class CaveExplore(mjx_env.MjxEnv):
 
 
   def _cost_stability(self, boom_contact_dists: jax.Array, local_feet_pos: jax.Array) -> jax.Array:
+    """
+    Computes a stability cost for a robot using the support polygon approach.
+    This function evaluates the stability of the robot based on the positions of its feet (or boom ends)
+    and their contact status with the ground. If fewer than three feet are in contact, the function returns
+    the maximum cost, indicating instability. Otherwise, it calculates the margin of stability using the
+    support polygon formed by the contacting feet and normalizes this margin to produce a smooth cost value
+    between 0 and 1.
+    Args:
+      boom_contact_dists (jax.Array): Array of shape (4,) containing the signed distances from each boom end
+        to the ground. Negative values indicate contact or penetration.
+      local_feet_pos (jax.Array): Array of shape (4, 3) representing the local positions of each foot (boom end)
+        in the robot's coordinate frame.
+    Returns:
+      jax.Array: Scalar cost value in the range [0, 1], where 1.0 indicates instability (insufficient contacts)
+        and lower values indicate greater stability.
+    """
     """Stability cost using support polygon approach for better accuracy."""
     
     # Count boom ends in contact (negative distance means penetration/contact)
@@ -1631,9 +1510,6 @@ class CaveExplore(mjx_env.MjxEnv):
     # by encouraging more consistent exploration behavior
     return 0.0
     
-    # Future enhancement: track visited positions and reward novel areas
-    # This would require adding visited_positions to the info dict and 
-    # implementing a spatial hash or grid-based tracking system
 
   def _reward_x_milestone_progress(self, current_x: jax.Array, milestones_achieved: jax.Array, max_x_position: jax.Array) -> Tuple[jax.Array, jax.Array, jax.Array]:
     """Reward for reaching new x-direction milestones.
