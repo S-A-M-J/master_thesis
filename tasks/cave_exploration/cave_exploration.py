@@ -112,7 +112,7 @@ def default_config() -> config_dict.ConfigDict:
           kick_wait_times=[1.0, 3.0],
       ),
       stickiness_config=config_dict.create(
-          enable=False,  # Enable stickiness forces
+          enable=True,  # Enable stickiness forces
           stickiness_force=50.0,  # Force applied when stickiness is activated (towards wall when in contact)
           min_activation_threshold=0.1,  # Threshold for activating stickiness
           deactivation_threshold=-0.1,  # Threshold for deactivating stickiness (hysteresis)
@@ -709,6 +709,7 @@ class CaveExplore(mjx_env.MjxEnv):
         "last_stickiness_ctrl": jp.zeros(4),  # Track previous stickiness control values
         "boom_contact_dists": jp.full(4, 100.0),  # Initialize boom contact distances
         "boom_contact_normals": jp.zeros((4, 3)),  # Initialize boom contact normals
+        "boom_in_contact": jp.zeros(4, dtype=bool),  # Track if boom ends are in contact with cave walls
         "heading_from_imu": 0.0,
         "distance_from_imu": 0.0,
         "torso_contact": 0,  # Track if torso is in contact with cave walls
@@ -1245,7 +1246,7 @@ class CaveExplore(mjx_env.MjxEnv):
         info["x_milestones_achieved"] = updated_milestones
         info["max_x_position"] = updated_max_x
         
-        stability = self._cost_stability(boom_contact_dists, self.get_feet_pos(data))
+        stability = self._cost_stability(boom_contact_dists, self.get_feet_pos(data), info)
         return {
             "stability": stability,
             "distance_from_start": self._cost_dist_from_start(
@@ -1347,7 +1348,7 @@ class CaveExplore(mjx_env.MjxEnv):
     return jp.clip(movement_toward_start_norm, -0.2, 1.0)
 
 
-  def _cost_stability(self, boom_contact_dists: jax.Array, local_feet_pos: jax.Array) -> jax.Array:
+  def _cost_stability(self, boom_contact_dists: jax.Array, local_feet_pos: jax.Array, info: Dict[str, Any] = None) -> jax.Array:
     """
     Computes a stability cost for a robot using the support polygon approach.
     This function evaluates the stability of the robot based on the positions of its feet (or boom ends)
@@ -1369,7 +1370,9 @@ class CaveExplore(mjx_env.MjxEnv):
     # Count boom ends in contact (negative distance means penetration/contact)
     in_contact = boom_contact_dists < 0.0  # [4] boolean array
     num_contacts = jp.sum(in_contact)
-    
+    if info is not None:
+        info["boom_contact_status"] = in_contact  # Store contact status instead of overwriting distances
+
     # If fewer than 3 boom ends are in contact, immediately return maximum cost
     insufficient_contacts = num_contacts < 3
     
