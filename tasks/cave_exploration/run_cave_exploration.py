@@ -164,7 +164,7 @@ def configure_environment():
     
     # Target-based rewards
     env_cfg.reward_config.scales.distance_from_start = -1
-    env_cfg.reward_config.scales.stability = -0.3
+    env_cfg.reward_config.scales.stability = -0.5
     env_cfg.reward_config.scales.exploration_rate = 0.0
 
     
@@ -178,8 +178,8 @@ def configure_ppo_parameters():
     ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
     ppo_training_params = dict(ppo_params)
     # Modify params for training
-    ppo_training_params["num_timesteps"] = 20_000_000  # 50 million timesteps
-    ppo_training_params["episode_length"] = 5000
+    ppo_training_params["num_timesteps"] = 100_000_000  # 100 million timesteps
+    ppo_training_params["episode_length"] = 4000
     ppo_training_params["num_envs"] = 2048
     ppo_training_params["batch_size"] = 256
     ppo_training_params["num_minibatches"] = 32

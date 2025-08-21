@@ -45,7 +45,7 @@ jax.config.update("jax_debug_infs", True)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # Updated to use the latest training run - modify this path as needed
-relative_ckpt_path = "cave_exploration/logs/cave_exploration-2025-08-17_00-19-56"
+relative_ckpt_path = "../logs/cave_exploration-2025-08-21_00-38-33"
 ckpt_path = os.path.join(script_dir, relative_ckpt_path)
 
 print(f"Loading checkpoint from: {ckpt_path}")
@@ -54,7 +54,7 @@ print(f"Loading checkpoint from: {ckpt_path}")
 if not os.path.exists(ckpt_path):
     print(f"Error: Checkpoint path does not exist: {ckpt_path}")
     print("Available training runs:")
-    logs_dir = os.path.join(script_dir, "../../logs")
+    logs_dir = os.path.join(script_dir, "../logs")
     if os.path.exists(logs_dir):
         for run in sorted(os.listdir(logs_dir)):
             if run.startswith("cave_exploration-"):
@@ -164,9 +164,15 @@ def render_episodes():
     """Render episodes with the trained policy (function similar to create_videos in run_cave_exploration.py)"""
     print("=== RENDERING EPISODES ===")
     
+    # Create a unique timestamp for this rendering session
+    render_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    render_session_folder = os.path.join(ckpt_path, f'render_session_{render_timestamp}')
+    os.makedirs(render_session_folder, exist_ok=True)
+    print(f"Created render session folder: {render_session_folder}")
+    
     # Rollout parameters (match run_cave_exploration.py)
     rng = jax.random.PRNGKey(0)  # Use seed 0 for reproducible results
-    n_episodes = 5
+    n_episodes = 3
     rollout_steps = 3000
     
     # Set this to True to enable detailed logging of state info and rewards
@@ -183,6 +189,12 @@ def render_episodes():
         
     for episode in range(n_episodes):
         print(f"\nEpisode {episode + 1}/{n_episodes}")
+        
+        # Create episode folder
+        episode_folder = os.path.join(render_session_folder, f'episode_{episode + 1:02d}')
+        os.makedirs(episode_folder, exist_ok=True)
+        print(f"Created episode folder: {episode_folder}")
+        
         episode_rng, rng = jax.random.split(rng)
         state = jit_reset(episode_rng)
         rollout = [state]  # Reset rollout for each episode
@@ -284,7 +296,7 @@ def render_episodes():
 
         # Save detailed logs for this episode if enabled
         if ENABLE_DETAILED_LOGGING:
-            log_filename = os.path.join(ckpt_path, f'detailed_logs_episode_{episode}_cave_{selected_cave_id}_reward_{episode_reward:.2f}.json')
+            log_filename = os.path.join(episode_folder, f'detailed_logs_cave_{selected_cave_id}_reward_{episode_reward:.2f}.json')
             try:
                 with open(log_filename, 'w') as f:
                     json.dump(episode_logs, f, indent=2)
@@ -292,7 +304,7 @@ def render_episodes():
             except Exception as e:
                 print(f"Error saving detailed logs: {e}")
                 # Fallback: save as text file
-                txt_filename = os.path.join(ckpt_path, f'detailed_logs_episode_{episode}_cave_{selected_cave_id}_reward_{episode_reward:.2f}.txt')
+                txt_filename = os.path.join(episode_folder, f'detailed_logs_cave_{selected_cave_id}_reward_{episode_reward:.2f}.txt')
                 with open(txt_filename, 'w') as f:
                     for frame in episode_logs:
                         f.write(f"Episode: {frame['episode']}, Step: {frame['step']}, "
@@ -314,16 +326,40 @@ def render_episodes():
         print(f"Rendered {len(frames)} frames")
 
         # Save video
-        video_path = os.path.join(ckpt_path, f'render_episode_{episode}_cave_{selected_cave_id}_reward_{episode_reward:.1f}.mp4')
+        video_path = os.path.join(episode_folder, f'render_cave_{selected_cave_id}_reward_{episode_reward:.1f}.mp4')
         fps = 1.0 / env.dt
 
         print(f"Saving video to {video_path} at {fps} FPS...")
         imageio.mimsave(video_path, frames, fps=fps)
         print(f"Video saved successfully: Episode {episode + 1}, Reward: {episode_reward:.3f}")
+        
+        # Create episode summary file
+        episode_summary = {
+            'episode_number': episode + 1,
+            'total_episodes': n_episodes,
+            'cave_id': selected_cave_id,
+            'episode_reward': episode_reward,
+            'rollout_steps': len(rollout),
+            'max_steps': rollout_steps,
+            'completed_early': len(rollout) < rollout_steps,
+            'video_filename': os.path.basename(video_path),
+            'log_filename': os.path.basename(log_filename) if ENABLE_DETAILED_LOGGING else None,
+            'timestamp': datetime.now().isoformat(),
+            'environment_config': {
+                'domain_randomization': False,
+                'randomize_starting_pos': env_cfg.randomize_starting_pos,
+                'scene_type': 'eval'
+            }
+        }
+        
+        summary_path = os.path.join(episode_folder, 'episode_summary.json')
+        with open(summary_path, 'w') as f:
+            json.dump(episode_summary, f, indent=2)
+        print(f"Episode summary saved to {summary_path}")
 
     # Save comprehensive detailed logs for all episodes if enabled
     if ENABLE_DETAILED_LOGGING and 'detailed_logs' in locals():
-        comprehensive_log_filename = os.path.join(ckpt_path, f'detailed_logs_all_episodes_cave_{selected_cave_id}.json')
+        comprehensive_log_filename = os.path.join(render_session_folder, f'detailed_logs_all_episodes_cave_{selected_cave_id}.json')
         try:
             with open(comprehensive_log_filename, 'w') as f:
                 json.dump(detailed_logs, f, indent=2)
@@ -331,7 +367,7 @@ def render_episodes():
         except Exception as e:
             print(f"Error saving comprehensive detailed logs: {e}")
             # Fallback: save as text file
-            txt_filename = os.path.join(ckpt_path, f'detailed_logs_all_episodes_cave_{selected_cave_id}.txt')
+            txt_filename = os.path.join(render_session_folder, f'detailed_logs_all_episodes_cave_{selected_cave_id}.txt')
             with open(txt_filename, 'w') as f:
                 for frame in detailed_logs:
                     f.write(f"Episode: {frame['episode']}, Step: {frame['step']}, "
@@ -342,6 +378,40 @@ def render_episodes():
                         f.write(f"Individual Rewards: {frame['individual_rewards']}\n")
                     f.write("\n")
             print(f"Comprehensive detailed logs saved as text to {txt_filename}")
+    
+    # Create session summary
+    session_summary = {
+        'render_timestamp': render_timestamp,
+        'cave_id': selected_cave_id,
+        'total_episodes': n_episodes,
+        'episode_rewards': episode_rewards,
+        'average_reward': sum(episode_rewards)/len(episode_rewards),
+        'best_episode': {
+            'episode_number': episode_rewards.index(max(episode_rewards)) + 1,
+            'reward': max(episode_rewards)
+        },
+        'worst_episode': {
+            'episode_number': episode_rewards.index(min(episode_rewards)) + 1,
+            'reward': min(episode_rewards)
+        },
+        'environment_config': {
+            'domain_randomization': False,
+            'randomize_starting_pos': env_cfg.randomize_starting_pos,
+            'scene_type': 'eval'
+        },
+        'render_config': {
+            'rollout_steps': rollout_steps,
+            'render_every': 1,
+            'width': 1920,
+            'height': 1080,
+            'camera': 'track_global'
+        }
+    }
+    
+    session_summary_path = os.path.join(render_session_folder, 'render_session_summary.json')
+    with open(session_summary_path, 'w') as f:
+        json.dump(session_summary, f, indent=2)
+    print(f"Render session summary saved to {session_summary_path}")
     
     # Print summary of all episodes (match run_cave_exploration.py)
     print("\n=== EPISODE REWARD SUMMARY ===")

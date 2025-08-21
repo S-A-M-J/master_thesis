@@ -138,9 +138,12 @@ class CaveBatchLoader:
             geom.set("contype", "2")
             geom.set("conaffinity", "1")
             geom.set("friction", "5.0 0.01 0.001")
-            geom.set("solref", "0.001 1")
-            geom.set("solimp", "0.99 0.99 0.001")
-        
+            #geom.set("solref", "0.001 1")
+            #geom.set("solimp", "0.99 0.99 0.001")
+            geom.set("solref", "0.003 1")
+            geom.set("solimp", "0.9 0.995 0.03 0.5 2")
+            geom.set("margin", "0.005")  # Added margin for better collision handling
+
         # Convert to string
         xml_string = ET.tostring(root, encoding='unicode')
         return xml_string
