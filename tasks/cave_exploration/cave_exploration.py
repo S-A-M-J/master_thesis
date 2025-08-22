@@ -713,6 +713,7 @@ class CaveExplore(mjx_env.MjxEnv):
         "heading_from_imu": 0.0,
         "distance_from_imu": 0.0,
         "torso_contact": 0,  # Track if torso is in contact with cave walls
+        "stability_margin": jp.zeros(1),  # Stability margin for the torso
     }
 
     metrics = {}
@@ -1370,8 +1371,8 @@ class CaveExplore(mjx_env.MjxEnv):
     # Count boom ends in contact (negative distance means penetration/contact)
     in_contact = boom_contact_dists < 0.0  # [4] boolean array
     num_contacts = jp.sum(in_contact)
-    if info is not None:
-        info["boom_contact_status"] = in_contact  # Store contact status instead of overwriting distances
+   
+    info["boom_contact_status"] = in_contact  # Store contact status instead of overwriting distances
 
     # If fewer than 3 boom ends are in contact, immediately return maximum cost
     insufficient_contacts = num_contacts < 3
@@ -1381,7 +1382,7 @@ class CaveExplore(mjx_env.MjxEnv):
     
     # Create contact mask and compute margin based on support polygon
     margin = self._compute_support_polygon_margin(feet_xy, in_contact, num_contacts)
-    
+    info["stability_margin"] = margin  # Store margin for debugging
     # Normalize and convert to cost [0, 1]
     characteristic_length = 0.2  # typical foot spacing
     normalized_margin = -margin / characteristic_length
