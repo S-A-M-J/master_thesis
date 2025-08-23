@@ -45,7 +45,7 @@ jax.config.update("jax_debug_infs", True)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # Updated to use the latest training run - modify this path as needed
-relative_ckpt_path = "../logs/cave_exploration-2025-08-21_11-20-16"
+relative_ckpt_path = "../logs/cave_exploration-continue-2025-08-21_11-20-16-2025-08-21_17-19-50"
 ckpt_path = os.path.join(script_dir, relative_ckpt_path)
 
 print(f"Loading checkpoint from: {ckpt_path}")

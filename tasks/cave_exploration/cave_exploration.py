@@ -712,6 +712,7 @@ class CaveExplore(mjx_env.MjxEnv):
         "heading_from_imu": 0.0,
         "distance_from_imu": 0.0,
         "torso_contact": 0,  # Track if torso is in contact with cave walls
+        "stability_margin": 0.0,  # Track stability margin in meters
     }
 
     metrics = {}
@@ -1245,9 +1246,13 @@ class CaveExplore(mjx_env.MjxEnv):
         info["x_milestones_achieved"] = updated_milestones
         info["max_x_position"] = updated_max_x
         
-        stability = self._cost_stability(boom_contact_dists, self.get_feet_pos(data))
+        stability_cost, stability_margin = self._cost_stability(boom_contact_dists, self.get_feet_pos(data))
+        
+        # Store the stability margin in the info dictionary for tracking
+        info["stability_margin"] = stability_margin
+        
         return {
-            "stability": stability,
+            "stability": stability_cost,
             "distance_from_start": self._cost_dist_from_start(
               jp.array(info["init_pos"]), data.qpos[0:3], info["last_pos"]
             ),
@@ -1347,7 +1352,7 @@ class CaveExplore(mjx_env.MjxEnv):
     return jp.clip(movement_toward_start_norm, -0.2, 1.0)
 
 
-  def _cost_stability(self, boom_contact_dists: jax.Array, local_feet_pos: jax.Array) -> jax.Array:
+  def _cost_stability(self, boom_contact_dists: jax.Array, local_feet_pos: jax.Array) -> Tuple[jax.Array, jax.Array]:
     """
     Computes a stability cost for a robot using the support polygon approach.
     This function evaluates the stability of the robot based on the positions of its feet (or boom ends)
@@ -1361,8 +1366,10 @@ class CaveExplore(mjx_env.MjxEnv):
       local_feet_pos (jax.Array): Array of shape (4, 3) representing the local positions of each foot (boom end)
         in the robot's coordinate frame.
     Returns:
-      jax.Array: Scalar cost value in the range [0, 1], where 1.0 indicates instability (insufficient contacts)
-        and lower values indicate greater stability.
+      Tuple[jax.Array, jax.Array]: Tuple of (cost, margin) where:
+        - cost: Scalar cost value in the range [0, 1], where 1.0 indicates instability (insufficient contacts)
+          and lower values indicate greater stability.
+        - margin: Stability margin in meters (positive if inside support polygon, negative if outside)
     """
     """Stability cost using support polygon approach for better accuracy."""
     
@@ -1388,8 +1395,11 @@ class CaveExplore(mjx_env.MjxEnv):
 
     # Return 1.0 if insufficient contacts, otherwise return the normal stability cost
     cost = jp.where(insufficient_contacts, 1.0, normal_cost)
+    
+    # For margin, return a large negative value when insufficient contacts to indicate instability
+    final_margin = jp.where(insufficient_contacts, -1.0, margin)
 
-    return cost
+    return cost, final_margin
 
   def _compute_support_polygon_margin(self, feet_xy: jax.Array, in_contact: jax.Array, num_contacts: int) -> jax.Array:
     """Compute margin from COM to support polygon edge using JAX-compatible operations.
