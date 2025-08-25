@@ -23,10 +23,10 @@ print("=== STARTING CAVE EXPLORATION RL TRAINING ===")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 # GPU configuration
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 # Configure JAX GPU memory settings BEFORE importing jax - OPTIMIZED FOR 40GB A100
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.985'  # Use 98.5% of GPU memory (~39.4GB out of 40GB)
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.975'  # Use 98.5% of GPU memory (~39.4GB out of 40GB)
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'  # Don't preallocate - grow as needed to avoid fragmentation
 
 # Tell XLA to use Triton GEMM, this improves steps/sec by ~30% on some GPUs

@@ -714,6 +714,7 @@ class CaveExplore(mjx_env.MjxEnv):
         "distance_from_imu": 0.0,
         "torso_contact": 0,  # Track if torso is in contact with cave walls
         "stability_margin": jp.zeros(1),  # Stability margin for the torso
+        "boom_contact_status": jp.zeros(4, dtype=bool),  # Initialize boom contact status
     }
 
     metrics = {}
@@ -881,6 +882,11 @@ class CaveExplore(mjx_env.MjxEnv):
     IMPORTANT: Each boom can only have one stickiness force at a time. When a boom is deactivated,
     ALL external forces on that boom body are cleared to ensure clean force management.
     
+    CONTACT DETECTION LOGIC:
+    - boom_in_contact: True when boom is penetrating wall (distance < 0, for stability calculation)
+    - boom_in_range: True when boom is close enough to wall for stickiness (0 <= distance <= 5mm)
+    - boom_stickiness_active: True when boom is both in_range AND activated by network
+    
     Args:
         data: MuJoCo data containing contact information
         stickiness_action: Array of stickiness activation values [4]
@@ -900,14 +906,25 @@ class CaveExplore(mjx_env.MjxEnv):
     )
     
     # Check which booms are in the 0-5mm range from walls (0 = contact, positive = distance)
+    # For stickiness activation, we want booms that are close to walls (in range for gripping)
     in_range = (deepest_dists >= 0.0) & (deepest_dists <= 0.005)  # [4] boolean array
     state_info["boom_contact_dists"] = deepest_dists
+    
+    # Update boom_in_contact tracking (consistent with stability calculation)
+    # For contact detection, we consider penetrating contact (negative distance)
+    actual_contact = deepest_dists < 0.0  # True when penetrating (negative distance)
+    state_info["boom_in_contact"] = actual_contact
     
     # Check which booms are activated by neural network
     activated = stickiness_action > self._config.stickiness_config.min_activation_threshold  # [4] boolean array
     
-    # Update stickiness state: active if both in range and activated
+    # Update stickiness state: active if both in range (close to wall) and activated by network
+    # Note: in_range includes both contact and near-contact, allowing for "sticky" behavior
     current_stickiness = in_range & activated
+    
+    # Store additional debug information
+    state_info["boom_in_range"] = in_range  # Close enough to activate stickiness
+    state_info["boom_activated_by_network"] = activated  # Network wants to activate stickiness
     
     # Get previous stickiness state
     prev_stickiness = state_info.get("boom_stickiness_active", jp.zeros(4, dtype=bool))
@@ -962,6 +979,8 @@ class CaveExplore(mjx_env.MjxEnv):
     
     # Update state info with current stickiness state
     state_info["boom_stickiness_active"] = current_stickiness
+    # Also update boom_contact_status to be consistent with boom_in_contact
+    state_info["boom_contact_status"] = state_info["boom_in_contact"]
     
     return data.replace(xfrc_applied=updated_xfrc)
   
@@ -1141,6 +1160,8 @@ class CaveExplore(mjx_env.MjxEnv):
         lidar_directions_flat,  # LIDAR ray directions (flattened)
         info["distance_from_imu"],  # 1
         info["heading_from_imu"],  # 1
+        info.get("boom_stickiness_active", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom stickiness status)
+        info.get("boom_in_contact", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom contact status)
         #info["deepest_lidar_direction"],  # 3 (direction of the average of top 3 deepest LIDAR ranges)
     ])
 
@@ -1160,6 +1181,12 @@ class CaveExplore(mjx_env.MjxEnv):
         feet_vel,  # 4*3
         data.xfrc_applied[self._torso_body_id, :3],  # 3
         info["steps_since_last_pert"] >= info["steps_until_next_pert"],  # 1
+        # Add boom stickiness forces for each boom (privileged info)
+        jp.concatenate([data.xfrc_applied[body_id, :3] for body_id in self._boom_body_ids]),  # 4*3 = 12 (forces on each boom)
+        # Add boom stickiness debug info
+        info.get("boom_in_range", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom in range for stickiness)
+        info.get("boom_activated_by_network", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom activated by network)
+        info.get("boom_contact_dists", jp.full(4, 100.0)),  # 4 (actual distances to walls)
     ])
 
     return {
