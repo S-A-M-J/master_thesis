@@ -58,3 +58,10 @@ In the terminal, run the following command to train the model.
    ```bash
    python train.py
    ```
+
+
+# Generating caves
+python '/home/ga53voq/master_thesis/tasks/cave_exploration/environment/utils/cave_generator.py' --count=300 --output-dir="new_caves"
+
+# running training in background
+nohup python -u tasks/cave_exploration/run_cave_exploration.py > cave_training.log 2>&1 &

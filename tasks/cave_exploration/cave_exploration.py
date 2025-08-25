@@ -1350,162 +1350,274 @@ class CaveExplore(mjx_env.MjxEnv):
 
 
   def _cost_stability(self, boom_contact_dists: jax.Array, local_feet_pos: jax.Array, info: Dict[str, Any] = None) -> jax.Array:
-    """
-    Computes a stability cost for a robot using the support polygon approach.
-    This function evaluates the stability of the robot based on the positions of its feet (or boom ends)
-    and their contact status with the ground. If fewer than three feet are in contact, the function returns
-    the maximum cost, indicating instability. Otherwise, it calculates the margin of stability using the
-    support polygon formed by the contacting feet and normalizes this margin to produce a smooth cost value
-    between 0 and 1.
-    Args:
-      boom_contact_dists (jax.Array): Array of shape (4,) containing the signed distances from each boom end
-        to the ground. Negative values indicate contact or penetration.
-      local_feet_pos (jax.Array): Array of shape (4, 3) representing the local positions of each foot (boom end)
-        in the robot's coordinate frame.
-    Returns:
-      jax.Array: Scalar cost value in the range [0, 1], where 1.0 indicates instability (insufficient contacts)
-        and lower values indicate greater stability.
-    """
-    """Stability cost using support polygon approach for better accuracy."""
-    
-    # Count boom ends in contact (negative distance means penetration/contact)
-    in_contact = boom_contact_dists < 0.0  # [4] boolean array
-    num_contacts = jp.sum(in_contact)
-   
-    info["boom_contact_status"] = in_contact  # Store contact status instead of overwriting distances
+      # in_contact: True when penetrating/touching
+      in_contact = boom_contact_dists < 0.0  # (4,)
+      num_contacts = jp.sum(in_contact)
 
-    # If fewer than 3 boom ends are in contact, immediately return maximum cost
-    insufficient_contacts = num_contacts < 3
-    
-    # Extract x, y coordinates only
-    feet_xy = local_feet_pos[:, :2]  # Shape: (4, 2)
-    
-    # Create contact mask and compute margin based on support polygon
-    margin = self._compute_support_polygon_margin(feet_xy, in_contact, num_contacts)
-    info["stability_margin"] = margin  # Store margin for debugging
-    # Normalize and convert to cost [0, 1]
-    characteristic_length = 0.2  # typical foot spacing
-    normalized_margin = -margin / characteristic_length
-    
-    # Smooth cost function
-    normal_cost = jp.clip(jp.tanh((normalized_margin + 1) * 3.0), 0.0, 1.0)
+      if info is not None:
+          info["boom_contact_status"] = in_contact
 
-    # Return 1.0 if insufficient contacts, otherwise return the normal stability cost
-    cost = jp.where(insufficient_contacts, 1.0, normal_cost)
+      # If fewer than 3 contacts, maximal instability
+      insufficient_contacts = num_contacts < 3
 
-    return cost
+      feet_xy = local_feet_pos[:, :2]  # (4,2)
 
-  def _compute_support_polygon_margin(self, feet_xy: jax.Array, in_contact: jax.Array, num_contacts: int) -> jax.Array:
-    """Compute margin from COM to support polygon edge using JAX-compatible operations.
-    
-    Args:
-        feet_xy: Array of shape (4, 2) with foot x,y positions
-        in_contact: Array of shape (4,) with boolean contact flags
-        num_contacts: Number of feet in contact
-        
-    Returns:
-        Distance from COM (0,0) to nearest edge of support polygon (negative if outside)
-    """
-    # For the case where we have <= 3 contacts, fall back to bounding box
-    # For 4 contacts, use actual convex hull approach
-    
-    # Extract contact feet positions
-    contact_feet = jp.where(in_contact[:, None], feet_xy, jp.array([0.0, 0.0]))
-    
-    # Compute convex hull for the contact points
-    hull_points = self._compute_convex_hull_4points_vectorized(contact_feet, in_contact)
-    
-    # Compute distance from origin to convex polygon
-    margin = self._distance_to_convex_polygon_vectorized(jp.zeros(2), hull_points, in_contact)
-    
-    return margin
+      # True convex hull and margin
+      margin = self._support_margin_from_com(feet_xy, in_contact)
 
-  def _compute_convex_hull_4points_vectorized(self, points: jax.Array, valid_mask: jax.Array) -> jax.Array:
-    """Vectorized convex hull computation for up to 4 points.
-    
-    Args:
-        points: Array of shape (4, 2) with point coordinates
-        valid_mask: Array of shape (4,) indicating which points are valid
-        
-    Returns:
-        Array of shape (4, 2) with hull points in counter-clockwise order
-        (invalid points filled with [0, 0])
-    """
-    # Find centroid of valid points for angle computation
-    num_valid = jp.sum(valid_mask)
-    centroid = jp.sum(jp.where(valid_mask[:, None], points, 0.0), axis=0) / jp.maximum(num_valid, 1)
-    
-    # Compute angles from centroid to each point
-    relative_points = points - centroid
-    angles = jp.arctan2(relative_points[:, 1], relative_points[:, 0])
-    
-    # Set invalid points to have infinite angle so they sort last
-    angles = jp.where(valid_mask, angles, jp.inf)
-    
-    # Sort points by angle (this gives us counter-clockwise ordering)
-    sorted_indices = jp.argsort(angles)
-    
-    # Create hull by reordering points according to sorted indices
-    hull_points = points[sorted_indices]
-    hull_valid = valid_mask[sorted_indices]
-    
-    # Zero out invalid hull points
-    hull_points = jp.where(hull_valid[:, None], hull_points, 0.0)
-    
-    return hull_points
+      if info is not None:
+          info["stability_margin"] = margin
 
-  def _distance_to_convex_polygon_vectorized(self, point: jax.Array, hull_points: jax.Array, hull_valid: jax.Array) -> jax.Array:
-    """Compute signed distance from point to convex polygon using vectorized operations.
-    
-    Args:
-        point: Array of shape (2,) with query point coordinates
-        hull_points: Array of shape (4, 2) with hull vertices
-        hull_valid: Array of shape (4,) indicating valid hull points
-        
-    Returns:
-        Signed distance (negative if outside polygon)
-    """
-    # Create edge vectors by rolling the hull points
-    p1 = hull_points  # Current vertices
-    p2 = jp.roll(hull_points, -1, axis=0)  # Next vertices (with wraparound)
-    
-    # Edge validity: both current and next point must be valid
-    edge_valid = hull_valid & jp.roll(hull_valid, -1, axis=0)
-    
-    # Compute edge vectors and perpendicular distances
-    edge_vectors = p2 - p1
-    point_to_p1 = point - p1
-    
-    # For each edge, compute the signed distance using cross product
-    # Cross product gives signed area of parallelogram, divide by edge length for distance
-    cross_products = edge_vectors[:, 0] * point_to_p1[:, 1] - edge_vectors[:, 1] * point_to_p1[:, 0]
-    edge_lengths = jp.linalg.norm(edge_vectors, axis=1)
-    signed_distances = cross_products / jp.maximum(edge_lengths, 1e-12)
-    
-    # Point is inside if all signed distances are positive (for counter-clockwise hull)
-    # We only consider valid edges
-    valid_signed_distances = jp.where(edge_valid, signed_distances, jp.inf)
-    min_signed_distance = jp.min(valid_signed_distances)
-    
-    # For numerical stability, also compute actual distance to closest edge
-    # This handles the case where we need the absolute distance magnitude
-    
-    # Project point onto each edge and compute distances
-    edge_lengths_sq = jp.sum(edge_vectors**2, axis=1)
-    t = jp.sum(point_to_p1 * edge_vectors, axis=1) / jp.maximum(edge_lengths_sq, 1e-12)
-    t_clamped = jp.clip(t, 0.0, 1.0)
-    
-    # Closest points on edges
-    closest_points = p1 + t_clamped[:, None] * edge_vectors
-    distances_to_edges = jp.linalg.norm(point - closest_points, axis=1)
-    
-    # Minimum distance to any valid edge
-    valid_distances = jp.where(edge_valid, distances_to_edges, jp.inf)
-    min_distance = jp.min(valid_distances)
-    
-    # Return signed distance: positive if inside, negative if outside
-    is_inside = min_signed_distance > -1e-6  # Small tolerance for numerical errors
-    return jp.where(is_inside, min_distance, -min_distance) 
+      # Positive margin => stable, negative => outside
+      characteristic_length = 0.2
+      normalized = -margin / characteristic_length  # outside -> positive
+      # Smooth map to [0,1]
+      cost = jp.clip(jp.tanh((normalized + 1.0) * 3.0), 0.0, 1.0)
+      return jp.where(insufficient_contacts, 1.0, cost)
+
+
+  def _support_margin_from_com(self, feet_xy: jax.Array, in_contact: jax.Array) -> jax.Array:
+      """Signed distance from COM (0,0) to nearest edge of the convex hull of contacting feet.
+        Positive if inside/on hull, negative if outside.
+      """
+      # For stability computation, we need to work with only contacting feet
+      # Since JAX doesn't allow dynamic boolean indexing, we'll use a different approach
+      
+      # Apply contact mask by setting non-contacting feet to a large distance
+      # This effectively removes them from the stability calculation
+      contact_mask = in_contact[:, None]  # Shape (4, 1) for broadcasting
+      masked_feet = jp.where(contact_mask, feet_xy, jp.array([1000.0, 1000.0]))
+      
+      # Compute convex hull with the masked points
+      hull = self._convex_hull_monotonic_chain(masked_feet, in_contact)
+      # Distance from origin to hull
+      return self._signed_distance_to_ccw_polygon(jp.zeros((2,)), hull, in_contact)
+
+
+  def _convex_hull_monotonic_chain(self, points: jax.Array, in_contact: jax.Array) -> jax.Array:
+      """Compute convex hull for up to 4 points using JAX-compatible operations.
+      Returns hull vertices in CCW order, padded with the last valid vertex.
+      """
+      # Simplified approach for JAX compatibility
+      # For up to 4 points, we can use a direct vectorized approach
+      
+      # Count number of valid points
+      num_valid = jp.sum(in_contact.astype(jp.int32))
+      
+      # Create a mask to select only contacting points
+      # Set non-contacting points to a far-away position
+      masked_points = jp.where(in_contact[:, None], points, jp.array([1000.0, 1000.0]))
+      
+      # For simplicity with JAX constraints, sort points by x-coordinate then y-coordinate
+      # This gives us a deterministic ordering that works for convex hull
+      x_coords = masked_points[:, 0]
+      y_coords = masked_points[:, 1]
+      
+      # Create sort keys: primary by x, secondary by y
+      sort_keys = x_coords + y_coords * 1e-6  # Small epsilon to break ties
+      sorted_indices = jp.argsort(sort_keys)
+      
+      # Get sorted points
+      sorted_points = masked_points[sorted_indices]
+      
+      # For the simplified case, we'll return the sorted contacting points
+      # The distance function will handle the proper geometry
+      
+      # Handle different cases based on number of valid points
+      def hull_1_point():
+          return jp.tile(sorted_points[0], (4, 1))
+      
+      def hull_2_points():
+          return jp.array([sorted_points[0], sorted_points[1], sorted_points[1], sorted_points[1]])
+      
+      def hull_3_points():
+          # For 3 points, check orientation and arrange in CCW order
+          p0, p1, p2 = sorted_points[0], sorted_points[1], sorted_points[2]
+          
+          # Cross product to determine orientation
+          cross = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0])
+          
+          # If points are collinear or clockwise, we need to reorder
+          return jp.where(
+              cross > 1e-8,  # CCW
+              jp.array([p0, p1, p2, p2]),
+              jp.array([p0, p2, p1, p1])  # Swap p1 and p2 for CCW
+          )
+      
+      def hull_4_points():
+          # For 4 points, use a simplified approach
+          # Sort by angle from centroid to get rough CCW order
+          centroid = jp.mean(sorted_points, axis=0)
+          vectors = sorted_points - centroid
+          angles = jp.arctan2(vectors[:, 1], vectors[:, 0])
+          angle_sorted_indices = jp.argsort(angles)
+          return sorted_points[angle_sorted_indices]
+      
+      # Handle different cases
+      return jp.where(
+          num_valid <= 1, hull_1_point(),
+          jp.where(
+              num_valid == 2, hull_2_points(),
+              jp.where(
+                  num_valid == 3, hull_3_points(),
+                  hull_4_points()
+              )
+          )
+      )
+
+
+  def _signed_distance_to_ccw_polygon(self, point: jax.Array, hull: jax.Array, in_contact: jax.Array) -> jax.Array:
+      """Compute signed distance from point to CCW polygon hull.
+      Positive if inside, negative if outside.
+      """
+      num_contacts = jp.sum(in_contact.astype(jp.int32))
+      
+      # Handle degenerate cases
+      def distance_to_point():
+          # Only one contact point - distance is just Euclidean distance (negative)
+          return -jp.linalg.norm(hull[0] - point)
+      
+      def distance_to_line():
+          # Two contact points - distance to line segment
+          p1, p2 = hull[0], hull[1]
+          
+          # Vector from p1 to p2
+          line_vec = p2 - p1
+          line_len_sq = jp.dot(line_vec, line_vec)
+          
+          # Handle degenerate line (two identical points)
+          line_len_sq = jp.where(line_len_sq < 1e-8, 1e-8, line_len_sq)
+          
+          # Project point onto line
+          t = jp.dot(point - p1, line_vec) / line_len_sq
+          t = jp.clip(t, 0.0, 1.0)  # Clamp to line segment
+          
+          closest_point = p1 + t * line_vec
+          distance = jp.linalg.norm(point - closest_point)
+          
+          # Check which side of the line the point is on
+          # Cross product gives signed area (positive if point is to the left of p1->p2)
+          cross = (p2[0] - p1[0]) * (point[1] - p1[1]) - (p2[1] - p1[1]) * (point[0] - p1[0])
+          
+          # Return negative distance (outside the "line polygon")
+          return -distance
+      
+  def _signed_distance_to_ccw_polygon(self, point: jax.Array, hull: jax.Array, in_contact: jax.Array) -> jax.Array:
+      """Compute signed distance from point to CCW polygon hull.
+      Positive if inside, negative if outside.
+      """
+      num_contacts = jp.sum(in_contact.astype(jp.int32))
+      
+      # Handle degenerate cases
+      def distance_to_point():
+          # Only one contact point - distance is just Euclidean distance (negative)
+          return -jp.linalg.norm(hull[0] - point)
+      
+      def distance_to_line():
+          # Two contact points - distance to line segment
+          p1, p2 = hull[0], hull[1]
+          
+          # Vector from p1 to p2
+          line_vec = p2 - p1
+          line_len_sq = jp.dot(line_vec, line_vec)
+          
+          # Handle degenerate line (two identical points)
+          line_len_sq = jp.where(line_len_sq < 1e-8, 1e-8, line_len_sq)
+          
+          # Project point onto line
+          t = jp.dot(point - p1, line_vec) / line_len_sq
+          t = jp.clip(t, 0.0, 1.0)  # Clamp to line segment
+          
+          closest_point = p1 + t * line_vec
+          distance = jp.linalg.norm(point - closest_point)
+          
+          # Check which side of the line the point is on
+          # Cross product gives signed area (positive if point is to the left of p1->p2)
+          cross = (p2[0] - p1[0]) * (point[1] - p1[1]) - (p2[1] - p1[1]) * (point[0] - p1[0])
+          
+          # Return negative distance (outside the "line polygon")
+          return -distance
+      
+      def distance_to_polygon():
+          # Simplified approach for up to 4 points
+          # Check distance to each possible edge and use vectorized operations
+          
+          # Create all possible edges (each point to next point, wrapping around)
+          indices = jp.arange(4)
+          next_indices = (indices + 1) % 4
+          
+          # Get edge vectors
+          edge_starts = hull[indices]  # Shape: (4, 2)
+          edge_ends = hull[next_indices]  # Shape: (4, 2)
+          edge_vecs = edge_ends - edge_starts  # Shape: (4, 2)
+          
+          # Calculate edge lengths
+          edge_lens_sq = jp.sum(edge_vecs**2, axis=1)  # Shape: (4,)
+          edge_lens = jp.sqrt(edge_lens_sq)
+          
+          # Only consider edges with non-zero length
+          valid_edges = edge_lens > 1e-8
+          
+          # For each edge, compute distance from point to edge
+          def compute_edge_distance(edge_start, edge_end, edge_vec, edge_len_sq):
+              # Project point onto edge
+              t = jp.dot(point - edge_start, edge_vec) / jp.maximum(edge_len_sq, 1e-8)
+              t = jp.clip(t, 0.0, 1.0)
+              
+              closest_point = edge_start + t * edge_vec
+              edge_distance = jp.linalg.norm(point - closest_point)
+              
+              # Check which side of edge the point is on
+              cross = edge_vec[0] * (point[1] - edge_start[1]) - edge_vec[1] * (point[0] - edge_start[0])
+              edge_inside = cross > 0  # Point is to the left of the edge (inside for CCW polygon)
+              
+              return edge_distance, edge_inside
+          
+          # Vectorized computation for all edges
+          edge_distances = jp.zeros(4)
+          edge_inside_flags = jp.ones(4, dtype=bool)  # Default to inside
+          
+          # Use vectorized operations to compute all edge distances at once
+          t_values = jp.sum((point[None, :] - edge_starts) * edge_vecs, axis=1) / jp.maximum(edge_lens_sq, 1e-8)
+          t_values = jp.clip(t_values, 0.0, 1.0)
+          
+          closest_points = edge_starts + t_values[:, None] * edge_vecs
+          edge_distances = jp.linalg.norm(point[None, :] - closest_points, axis=1)
+          
+          # Compute cross products for all edges
+          crosses = edge_vecs[:, 0] * (point[1] - edge_starts[:, 1]) - edge_vecs[:, 1] * (point[0] - edge_starts[:, 0])
+          edge_inside_flags = crosses > 0
+          
+          # Only consider valid edges for inside/outside test
+          relevant_inside_flags = jp.where(valid_edges, edge_inside_flags, True)
+          
+          # Point is inside if it's on the inside side of all valid edges
+          all_inside = jp.all(relevant_inside_flags)
+          
+          # Find minimum distance to any valid edge
+          valid_distances = jp.where(valid_edges, edge_distances, jp.inf)
+          min_dist = jp.min(valid_distances)
+          
+          # Return positive distance if inside, negative if outside
+          return jp.where(all_inside, min_dist, -min_dist)
+      
+      # Handle different cases based on number of contacts
+      return jp.where(
+          num_contacts <= 1, distance_to_point(),
+          jp.where(
+              num_contacts == 2, distance_to_line(),
+              distance_to_polygon()
+          )
+      )
+      
+      # Handle different cases based on number of contacts
+      return jp.where(
+          num_contacts <= 1, distance_to_point(),
+          jp.where(
+              num_contacts == 2, distance_to_line(),
+              distance_to_polygon()
+          )
+      )
 
 
   def _reward_exploration_rate(self, qpos: jax.Array) -> jax.Array:
