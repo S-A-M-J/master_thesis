@@ -51,25 +51,24 @@ def create_cave_domain_randomizer(cave_data_arrays: dict, max_boxes: int = 7500)
             box_indices = jp.arange(num_cave_geoms)
             boxes_to_place_mask = box_indices < num_wanted_boxes
             
-            # Create new positions for all cave boxes
+            # Create new positions for all cave boxes   
             new_positions = jp.where(
                 boxes_to_place_mask[:, None],
                 box_positions[:num_cave_geoms],  # Use cave positions for wanted boxes
                 jp.array([0.0, 0.0, -1000.0])   # Hide unwanted boxes underground
             )
             
-            
-            # Store cave_idx in the last box geometry position (x, y, z = cave_idx, cave_idx, cave_idx)
-            # This allows the environment to retrieve which cave was selected
-            cave_idx_float = cave_idx.astype(jp.float32)
-            cave_info_position = jp.array([cave_idx_float, cave_idx_float, cave_idx_float])
-            new_positions = new_positions.at[-1].set(cave_info_position)
-
             # Update all cave wall geometry positions at once
             geom_pos = geom_pos.at[cave_wall_geom_ids].set(new_positions)
             
-            #jax.debug.print("Domain randomization applied with {num_boxes} boxes", num_boxes=num_wanted_boxes)
+            # Store cave_idx in the last box geometry position (x, y, z = cave_idx, cave_idx, cave_idx)
+            # This allows the environment to retrieve which cave was selected
+            last_box_geom_id = cave_wall_geom_ids[-1]  # Use the last box geometry
+            cave_idx_float = cave_idx.astype(jp.float32)
+            cave_info_position = jp.array([cave_idx_float, cave_idx_float, cave_idx_float])
+            geom_pos = geom_pos.at[last_box_geom_id].set(cave_info_position)
             
+            #jax.debug.print("Domain randomization applied with {num_boxes} boxes", num_boxes=num_wanted_boxes)
             
             return geom_pos
         
@@ -91,19 +90,20 @@ def create_cave_domain_randomizer(cave_data_arrays: dict, max_boxes: int = 7500)
     return domain_randomize
 
 
-def prepare_cave_data_arrays(cave_batch_loader, max_boxes: int = 7500):
+def prepare_cave_data_arrays(mj_model, cave_batch_loader, max_boxes: int = 7500):
     """Prepare cave data in JAX-compatible arrays for domain randomization.
     
     Args:
+        mj_model: The MuJoCo model
         cave_batch_loader: The CaveBatchLoader instance
         max_boxes: Maximum number of boxes to support across all caves
         
     Returns:
         Dictionary with JAX arrays ready for use in domain randomization
     """
-    # Get all cave data
-    training_scene_data = cave_batch_loader.get_training_scene_data()
-    caves = training_scene_data["caves"]
+    # Get training scene data from cave_batch_loader
+    trainings_scene_data = cave_batch_loader.training_scene
+    caves = trainings_scene_data["caves"]
     
     num_caves = len(caves)
     cave_ids = list(caves.keys())
@@ -114,9 +114,8 @@ def prepare_cave_data_arrays(cave_batch_loader, max_boxes: int = 7500):
     
     # Get master cave geom IDs (assuming they're consistent)
     master_cave_geom_ids = []
-    mj_model = training_scene_data["mj_model"]
-    master_cave_id = training_scene_data["master_cave_id"]
-    
+    master_cave_id = trainings_scene_data["master_cave_id"]
+
     for i in range(mj_model.ngeom):
         geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, i)
         if geom_name and geom_name.startswith(f"cave_wall_box_{master_cave_id}_"):
@@ -127,21 +126,25 @@ def prepare_cave_data_arrays(cave_batch_loader, max_boxes: int = 7500):
     # Fill in cave data
     for cave_idx, cave_id in enumerate(cave_ids):
         cave_data = caves[cave_id]
-        voxel_positions = cave_data["voxel_positions"]
+        boxes = cave_data["boxes"]  # Use "boxes" key instead of "voxel_positions"
         
-        num_boxes = min(len(voxel_positions), max_boxes)
+        num_boxes = min(len(boxes), max_boxes)
         cave_box_counts = cave_box_counts.at[cave_idx].set(num_boxes)
         
         if num_boxes > 0:
             # Convert position dictionaries to [x, y, z] arrays
             position_list = []
-            for pos in voxel_positions[:num_boxes]:
-                if isinstance(pos, dict):
-                    # Convert dict with 'x', 'y', 'z' keys to list
-                    position_list.append([pos.get('x', 0.0), pos.get('y', 0.0), pos.get('z', 0.0)])
+            for box in boxes[:num_boxes]:
+                if isinstance(box, dict) and "position" in box:
+                    # Extract position from box dict structure: box["position"]["x/y/z"]
+                    pos = box["position"]
+                    position_list.append([pos.get('x'), pos.get('y'), pos.get('z')])
+                elif isinstance(box, dict):
+                    # Direct position dict with 'x', 'y', 'z' keys
+                    position_list.append([box.get('x'), box.get('y'), box.get('z')])
                 else:
                     # Assume it's already in list/array format
-                    position_list.append(pos)
+                    position_list.append(box)
             
             positions_array = jp.array(position_list)
             all_cave_positions = all_cave_positions.at[cave_idx, :num_boxes].set(positions_array)

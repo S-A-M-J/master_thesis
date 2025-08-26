@@ -11,7 +11,7 @@ import numpy as np
 CAVES_DIR = os.path.join(os.path.dirname(__file__), "caves")
 
 class CaveBatchLoader:
-    def __init__(self, config, reachbot_model_type=ReachbotModelType.BASIC, caves_directory=CAVES_DIR):
+    def __init__(self, config, reachbot_model_type=ReachbotModelType.BASIC, caves_directory=CAVES_DIR, eval_cave_id=None):
         """
         config: Configuration dictionary containing simulation parameters.
         reachbot_model_type: Type of Reachbot model to use (BASIC or DEFLECTION).
@@ -54,10 +54,10 @@ class CaveBatchLoader:
         all_cave_data = self._load_all_cave_metadata(cave_folders)
         
         # Create training scene
-        self._create_scene(train_caves, all_cave_data, config, "training")
-        
-        # Create evaluation scene  
-        self._create_scene(eval_caves, all_cave_data, config, "eval")
+        self._create_training_scene(train_caves, all_cave_data, config, "training")
+
+        # Create evaluation scene
+        self._create_evaluation_scene(eval_caves, all_cave_data, config, "eval")
 
     def _load_all_cave_metadata(self, cave_folders):
         """Load metadata from all caves using cave_config.json files."""
@@ -114,8 +114,8 @@ class CaveBatchLoader:
         print(f"Selected cave {master_cave_id} as master cave with {master_cave_data['box_count']} voxels")
         return master_cave_id, master_cave_data
 
-    def _create_master_cave_xml(self, master_cave_data):
-        """Create XML content for the master cave from its voxel positions."""
+    def _create_cave_xml(self, master_cave_data):
+        """Create XML content for the cave from its voxel positions."""
         voxel_size = master_cave_data["voxel_size"]
         box_size = voxel_size / 2.0  # MuJoCo uses half-extents for box geometry
         boxes = master_cave_data["boxes"]
@@ -148,10 +148,10 @@ class CaveBatchLoader:
         xml_string = ET.tostring(root, encoding='unicode')
         return xml_string
 
-    def _create_scene(self, cave_folders, all_cave_data, config, scene_type):
-        """Create a scene (training or eval) using the master cave approach."""
-        print(f"Creating {scene_type} scene with {len(cave_folders)} caves...")
-        
+    def _create_training_scene(self, cave_folders, all_cave_data, config):
+        """Create a training scene using the master cave approach."""
+        print(f"Creating training scene with {len(cave_folders)} caves...")
+
         # Find the master cave (cave with most voxels)
         print(f"Step 1: Finding master cave...")
         master_cave_id, master_cave_data = self._find_master_cave(all_cave_data)
@@ -162,12 +162,12 @@ class CaveBatchLoader:
         
         # Create XML for master cave
         print(f"Step 2: Creating master cave XML...")
-        master_cave_xml = self._create_master_cave_xml(master_cave_data)
+        master_cave_xml = self._create_cave_xml(master_cave_data)
         print(f"Step 2 completed: Master cave XML generated")
         
         # Save master cave XML
         print(f"Step 3: Saving master cave XML...")
-        master_cave_xml_file = os.path.join(self.caves_directory, f"{scene_type}_master_cave.xml")
+        master_cave_xml_file = os.path.join(self.caves_directory, f"training_master_cave.xml")
         try:
             with open(master_cave_xml_file, "w") as f:
                 f.write(master_cave_xml)
@@ -183,7 +183,7 @@ class CaveBatchLoader:
         
         # Save scene XML
         print(f"Step 5: Saving scene XML...")
-        scene_xml_file = os.path.join(self.caves_directory, f"scene_{scene_type}.xml")
+        scene_xml_file = os.path.join(self.caves_directory, f"scene_training.xml")
         with open(scene_xml_file, "w") as f:
             f.write(scene_xml)
         print(f"Step 5 completed: Scene XML saved to {scene_xml_file}")
@@ -203,7 +203,7 @@ class CaveBatchLoader:
         print(f"Step 8 completed: Temporary files cleaned up")
         
         # Store in appropriate scene
-        scene_dict = self.training_scene if scene_type == "training" else self.eval_scene
+        scene_dict = self.training_scene
         scene_dict["mj_model"] = mj_model
         scene_dict["mjx_model"] = mjx_model
         scene_dict["num_caves"] = len(cave_folders)
@@ -225,7 +225,77 @@ class CaveBatchLoader:
                 }
         print(f"Step 9 completed: Voxel positions stored for {len(scene_dict['caves'])} caves")
         
-        print(f"Created {scene_type} scene with master cave {master_cave_id} and {len(scene_dict['caves'])} total caves")
+        print(f"Created training scene with master cave {master_cave_id} and {len(scene_dict['caves'])} total caves")
+
+    def _create_evaluation_scene(self, eval_cave_data, config):
+        """Create a evaluation scene."""
+        
+        # Create XML for master cave
+        print(f"Step 2: Creating master cave XML...")
+        master_cave_xml = self._create_cave_xml(eval_cave_data)
+        print(f"Step 2 completed: Master cave XML generated")
+        
+        # Save master cave XML
+        print(f"Step 3: Saving cave XML...")
+        master_cave_xml_file = os.path.join(self.caves_directory, f"eval_master_cave.xml")
+        try:
+            with open(master_cave_xml_file, "w") as f:
+                f.write(master_cave_xml)
+            print(f"Step 3 completed: cave XML saved to {master_cave_xml_file}")
+        except Exception as e:
+            print(f"Error saving cave XML: {e}")
+            raise
+        
+        # Create scene XML with master cave
+        print(f"Step 4: Creating scene XML...")
+        scene_xml = self._create_scene_xml(master_cave_xml_file)
+        print(f"Step 4 completed: Scene XML created")
+        
+        # Save scene XML
+        print(f"Step 5: Saving scene XML...")
+        scene_xml_file = os.path.join(self.caves_directory, f"scene_eval.xml")
+        with open(scene_xml_file, "w") as f:
+            f.write(scene_xml)
+        print(f"Step 5 completed: Scene XML saved to {scene_xml_file}")
+        
+        # Create MuJoCo models
+        print(f"Step 6: Creating MuJoCo model...")
+        mj_model = self._create_mujoco_model(scene_xml_file, config)
+        print(f"Step 6 completed: MuJoCo model created")
+        
+        print(f"Step 7: Creating MJX model...")
+        mjx_model = mjx.put_model(mj_model)
+        print(f"Step 7 completed: MJX model created")
+        
+        # Clean up temporary files
+        print(f"Step 8: Cleaning up temporary files...")
+        os.remove(scene_xml_file)
+        print(f"Step 8 completed: Temporary files cleaned up")
+        
+        # Store in appropriate scene
+        scene_dict = self.training_scene
+        scene_dict["mj_model"] = mj_model
+        scene_dict["mjx_model"] = mjx_model
+        scene_dict["num_caves"] = len(cave_folders)
+        scene_dict["master_cave_id"] = master_cave_id
+        
+        # Store voxel positions for all caves in this scene
+        print(f"Step 9: Storing voxel positions for all caves...")
+        for folder in cave_folders:
+            cave_id = self._get_cave_id_from_folder(folder)
+            if cave_id in all_cave_data:
+                cave_info = all_cave_data[cave_id]
+                scene_dict["caves"][cave_id] = {
+                    "box_count": cave_info["box_count"],
+                    "starting_pos": cave_info["starting_pos"],
+                    "target_pos": cave_info["target_pos"],
+                    "voxel_bounds": cave_info["voxel_bounds"],
+                    "voxel_size": cave_info["voxel_size"],
+                    "voxel_positions": [box["position"] for box in cave_info["boxes"]], # Store all voxel position
+                }
+        print(f"Step 9 completed: Voxel positions stored for {len(scene_dict['caves'])} caves")
+        
+        print(f"Created training scene with master cave {master_cave_id} and {len(scene_dict['caves'])} total caves")
 
     def _get_cave_id_from_folder(self, folder):
         """Extract cave ID from folder path."""

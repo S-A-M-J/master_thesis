@@ -368,7 +368,7 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5, voxel_size=0.2, seed=N
         starting_positions = []
         # Number of segments in the cave x direction
         num_cave_segments = int(np.ceil(length / voxel_size))
-        for x_step in range(num_cave_segments - 3):  # 0 to num_cave_segments
+        for x_step in range(num_cave_segments - 5):  # 0 to num_cave_segments
             # Convert x step to actual x coordinate in voxel space
             x_coord = x_step
             

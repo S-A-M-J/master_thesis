@@ -150,8 +150,8 @@ def configure_environment():
     
     env_cfg.noise_config.level = 0.0
 
-    env_cfg.reward_config.scales.track_lidar_direction = 0.5
-    env_cfg.reward_config.scales.wide_stance = 0.05  
+    env_cfg.reward_config.scales.track_lidar_direction = 1.0
+    env_cfg.reward_config.scales.wide_stance = 0 
     
     # Reward scaling configuration
     env_cfg.reward_config.scales.orientation = -1.0

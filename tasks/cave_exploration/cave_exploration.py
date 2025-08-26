@@ -196,6 +196,7 @@ class CaveExplore(mjx_env.MjxEnv):
             "voxel_bounds": voxel_bounds_list,
             "voxel_positions": cave_data["voxel_positions"]
         }
+
     
     # Get master cave info
     self._master_cave_id = self._scene_data["master_cave_id"]
@@ -241,11 +242,13 @@ class CaveExplore(mjx_env.MjxEnv):
     if self._domain_randomization_enabled:
         self._prepare_domain_randomization_data()
     
-    # Call parent class __init__
+    # Call parent class __init__select_cave_environment
     super().__init__(config, config_overrides)
     
     # Call _post_init to initialize model-dependent attributes
     self._post_init()
+
+
     
   def get_environment_info(self):
     """Get information about this environment instance."""
@@ -335,28 +338,7 @@ class CaveExplore(mjx_env.MjxEnv):
         'cave_id': dr_data['cave_ids_array'][cave_idx],
         'voxel_bounds': dr_data['all_voxel_bounds'][cave_idx]
     }
-    
-
-  @property
-  def mjx_model(self):
-    """Return the mjx_model from the scene data."""
-    return self._scene_data["mjx_model"]
-
-  def _initialize_master_cave_geom_mapping(self):
-    """Initialize mapping of geom IDs for the master cave boxes."""
-    mj_model = self._scene_data["mj_model"]
-    
-    # Find all geoms that belong to the master cave (they should be named with master cave pattern)
-    for i in range(mj_model.ngeom):
-        geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, i)
-        if geom_name and geom_name.startswith(f"cave_wall_box_{self._master_cave_id}_"):
-            self._master_cave_geom_ids.append(i)
-    
-    # Convert to JAX array for efficiency
-    self._master_cave_geom_ids = jp.array(self._master_cave_geom_ids)
-    
-    print(f"Initialized {len(self._master_cave_geom_ids)} geoms for master cave {self._master_cave_id}")
-
+  
   def select_cave_environment(self, cave_id: int):
     """Select a specific cave environment by repositioning boxes."""
     if cave_id not in self._cave_params:
@@ -392,6 +374,27 @@ class CaveExplore(mjx_env.MjxEnv):
     print(f"Number of starting positions: {len([p for p in self._current_env['starting_pos'] if p is not None])}")
     
     return self._current_env
+    
+
+  @property
+  def mjx_model(self):
+    """Return the mjx_model from the scene data."""
+    return self._scene_data["mjx_model"]
+
+  def _initialize_master_cave_geom_mapping(self):
+    """Initialize mapping of geom IDs for the master cave boxes."""
+    mj_model = self._scene_data["mj_model"]
+    
+    # Find all geoms that belong to the master cave (they should be named with master cave pattern)
+    for i in range(mj_model.ngeom):
+        geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, i)
+        if geom_name and geom_name.startswith(f"cave_wall_box_{self._master_cave_id}_"):
+            self._master_cave_geom_ids.append(i)
+    
+    # Convert to JAX array for efficiency
+    self._master_cave_geom_ids = jp.array(self._master_cave_geom_ids)
+    
+    print(f"Initialized {len(self._master_cave_geom_ids)} geoms for master cave {self._master_cave_id}")
     
 
   def _post_init(self) -> None:
@@ -636,6 +639,9 @@ class CaveExplore(mjx_env.MjxEnv):
     ])
     qpos = qpos.at[:2].set(new_position[:2])  # Set x, y positions
     qpos = qpos.at[2].set(qpos[2] + new_position[2])  # Add z offset to existing z position
+    qpos = qpos.at[0].set(qpos[0] + 3.0)
+    qpos = qpos.at[1].set(qpos[1] - 0.8)
+    qpos = qpos.at[2].set(qpos[2] + 0.4)
 
     # Randomize the initial z axis orientation of the robot
     rng, key = jax.random.split(rng)
@@ -713,8 +719,10 @@ class CaveExplore(mjx_env.MjxEnv):
         "heading_from_imu": 0.0,
         "distance_from_imu": 0.0,
         "torso_contact": 0,  # Track if torso is in contact with cave walls
-        "stability_margin": jp.zeros(1),  # Stability margin for the torso
+        "stability_margin": 0.0,  # Stability margin for the torso
         "boom_contact_status": jp.zeros(4, dtype=bool),  # Initialize boom contact status
+        "boom_in_range": jp.zeros(4, dtype=bool),  # Track if boom ends are in range for stickiness
+        "boom_activated_by_network": jp.zeros(4, dtype=bool),  # Track if boom ends are activated by network
     }
 
     metrics = {}
@@ -1160,8 +1168,9 @@ class CaveExplore(mjx_env.MjxEnv):
         lidar_directions_flat,  # LIDAR ray directions (flattened)
         info["distance_from_imu"],  # 1
         info["heading_from_imu"],  # 1
-        info.get("boom_stickiness_active", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom stickiness status)
-        info.get("boom_in_contact", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom contact status)
+        ##
+        #info.get("boom_stickiness_active", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom stickiness status)
+        #info.get("boom_in_contact", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom contact status)
         #info["deepest_lidar_direction"],  # 3 (direction of the average of top 3 deepest LIDAR ranges)
     ])
 
@@ -1181,12 +1190,13 @@ class CaveExplore(mjx_env.MjxEnv):
         feet_vel,  # 4*3
         data.xfrc_applied[self._torso_body_id, :3],  # 3
         info["steps_since_last_pert"] >= info["steps_until_next_pert"],  # 1
+        ###
         # Add boom stickiness forces for each boom (privileged info)
-        jp.concatenate([data.xfrc_applied[body_id, :3] for body_id in self._boom_body_ids]),  # 4*3 = 12 (forces on each boom)
+        #jp.concatenate([data.xfrc_applied[body_id, :3] for body_id in self._boom_body_ids]),  # 4*3 = 12 (forces on each boom)
         # Add boom stickiness debug info
-        info.get("boom_in_range", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom in range for stickiness)
-        info.get("boom_activated_by_network", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom activated by network)
-        info.get("boom_contact_dists", jp.full(4, 100.0)),  # 4 (actual distances to walls)
+        #info.get("boom_in_range", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom in range for stickiness)
+        #info.get("boom_activated_by_network", jp.zeros(4, dtype=bool)).astype(jp.float32),  # 4 (boom activated by network)
+        #info.get("boom_contact_dists", jp.full(4, 100.0)),  # 4 (actual distances to walls)
     ])
 
     return {

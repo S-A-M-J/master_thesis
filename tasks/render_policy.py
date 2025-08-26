@@ -73,7 +73,7 @@ print('Rendering cave exploration task result')
 env_cfg = reachbot_config()
 json_env_cfg = config_dict.ConfigDict(loaded_config['env_cfg'])
 env_cfg.update(json_env_cfg)
-env_cfg.randomize_starting_pos = True  # Enable random starting position for rendering
+env_cfg.randomize_starting_pos = False  # Enable random starting position for rendering
 
 # Create CaveBatchLoader to properly load cave environments (like in run_cave_exploration.py)
 print("Loading cave environments with CaveBatchLoader...")
@@ -157,7 +157,7 @@ params = model.load_params(params_path)
 print("Setting up JIT compiled functions...")
 jit_reset = jax.jit(env.reset)
 jit_step = jax.jit(env.step)
-inference_fn = make_inference_fn(params, deterministic=True)
+inference_fn = make_inference_fn(params, deterministic=False)
 jit_inference_fn = jax.jit(inference_fn)
 
 def render_episodes():
