@@ -62,7 +62,7 @@ def create_cave_domain_randomizer(cave_data_arrays: dict, max_boxes: int = 7500)
             # Store cave_idx in the last box geometry position (x, y, z = cave_idx, cave_idx, cave_idx)
             # This allows the environment to retrieve which cave was selected
             cave_idx_float = cave_idx.astype(jp.float32)
-            cave_info_position = jp.array([cave_idx_float, cave_idx_float, cave_idx_float])
+            cave_info_position = jp.array([cave_idx_float + 1000.0, cave_idx_float + 1000.0, cave_idx_float + 1000.0])
             new_positions = new_positions.at[-1].set(cave_info_position)
 
             # Update all cave wall geometry positions at once

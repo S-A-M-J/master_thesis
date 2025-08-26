@@ -34,7 +34,7 @@ from ml_collections import config_dict
 
 # Task-specific imports (match run_cave_exploration.py)
 from tasks.cave_exploration.cave_exploration import CaveExplore, default_config as reachbot_config
-from tasks.cave_exploration.environment.env_loader import CaveBatchLoader
+from tasks.cave_exploration.environment.env_loader_new import CaveBatchLoader
 from models.model_loader import ReachbotModelType
 
 # JAX configuration
@@ -75,9 +75,12 @@ json_env_cfg = config_dict.ConfigDict(loaded_config['env_cfg'])
 env_cfg.update(json_env_cfg)
 env_cfg.randomize_starting_pos = False  # Enable random starting position for rendering
 
+eval_cave_id = 289
+selected_cave_id = eval_cave_id  # Use eval cave for rendering  
+
 # Create CaveBatchLoader to properly load cave environments (like in run_cave_exploration.py)
 print("Loading cave environments with CaveBatchLoader...")
-cave_batch_loader = CaveBatchLoader(env_cfg, ReachbotModelType.BASIC)
+cave_batch_loader = CaveBatchLoader(env_cfg, ReachbotModelType.BASIC, eval_cave_index=eval_cave_id)
 
 # Print dataset summary
 dataset_summary = cave_batch_loader.get_dataset_summary()
@@ -99,11 +102,10 @@ env = CaveExplore(
 )
 
 # Select a specific cave for rendering (use first eval cave)
-selected_cave_id = eval_cave_ids[0]
-env.select_cave_environment(selected_cave_id)
+env.select_cave_environment(eval_cave_id)
 
 print(f"Environment setup completed:")
-print(f"  Using evaluation cave: {selected_cave_id}")
+print(f"  Using evaluation cave: {eval_cave_id}")
 print(f"  Available eval caves: {eval_cave_ids}")
 print(f"  Domain randomization: Disabled (for consistent rendering)")
 
@@ -172,14 +174,14 @@ def render_episodes():
     
     # Rollout parameters (match run_cave_exploration.py)
     rng = jax.random.PRNGKey(0)  # Use seed 0 for reproducible results
-    n_episodes = 3
+    n_episodes = 1
     rollout_steps = 3000
     
     # Set this to True to enable detailed logging of state info and rewards
     ENABLE_DETAILED_LOGGING = True
     
     print(f"Running rollout for {n_episodes} episode(s) with {rollout_steps} steps each...")
-    print(f"Selected cave for rendering: {selected_cave_id}")
+    print(f"Selected cave for rendering: {eval_cave_id}")
     
     episode_rewards = []
     

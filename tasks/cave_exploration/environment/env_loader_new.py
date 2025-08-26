@@ -11,16 +11,18 @@ import numpy as np
 CAVES_DIR = os.path.join(os.path.dirname(__file__), "caves")
 
 class CaveBatchLoader:
-    def __init__(self, config, reachbot_model_type=ReachbotModelType.BASIC, caves_directory=CAVES_DIR):
+    def __init__(self, config, reachbot_model_type=ReachbotModelType.BASIC, caves_directory=CAVES_DIR, eval_cave_index=None):
         """
         config: Configuration dictionary containing simulation parameters.
         reachbot_model_type: Type of Reachbot model to use (BASIC or DEFLECTION).
         caves_directory: Directory containing cave environments.
+        eval_cave_index: Specific cave ID to use for evaluation (e.g., 271). If None, uses master cave approach.
 
         Load cave environments and split them into training (90%) and evaluation (10%) scenes.
         """
         self.reachbot_model = ReachbotModel(reachbot_model_type)
         self.caves_directory = caves_directory
+        self.eval_cave_index = eval_cave_index
         
         # Initialize scene properties
         self.training_scene = {"mj_model": None, "mjx_model": None, "caves": {}}
@@ -149,9 +151,92 @@ class CaveBatchLoader:
         return xml_string
 
     def _create_scene(self, cave_folders, all_cave_data, config, scene_type):
-        """Create a scene (training or eval) using the master cave approach."""
+        """Create a scene (training or eval) using the master cave approach for training or specific cave for eval."""
         print(f"Creating {scene_type} scene with {len(cave_folders)} caves...")
         
+        if scene_type == "eval" and self.eval_cave_index is not None:
+            # Use specific cave for evaluation - eval_cave_index is the actual cave ID
+            eval_cave_id = self.eval_cave_index
+            
+            if eval_cave_id not in all_cave_data:
+                raise ValueError(f"Cave {eval_cave_id} data not found")
+            
+            eval_cave_data = all_cave_data[eval_cave_id]
+            eval_cave_data["cave_id"] = eval_cave_id
+            
+            print(f"Using specific cave {eval_cave_id} for evaluation")
+            print(f"Eval cave has {eval_cave_data['box_count']} voxels")
+            
+            # Create XML for evaluation cave
+            print(f"Step 1: Creating evaluation cave XML...")
+            eval_cave_xml = self._create_cave_xml(eval_cave_data)
+            print(f"Step 1 completed: Evaluation cave XML generated")
+            
+            # Save evaluation cave XML
+            print(f"Step 2: Saving evaluation cave XML...")
+            eval_cave_xml_file = os.path.join(self.caves_directory, f"{scene_type}_specific_cave.xml")
+            try:
+                with open(eval_cave_xml_file, "w") as f:
+                    f.write(eval_cave_xml)
+                print(f"Step 2 completed: Evaluation cave XML saved to {eval_cave_xml_file}")
+            except Exception as e:
+                print(f"Error saving evaluation cave XML: {e}")
+                raise
+            
+            # Create scene XML with evaluation cave
+            print(f"Step 3: Creating scene XML...")
+            scene_xml = self._create_scene_xml(eval_cave_xml_file)
+            print(f"Step 3 completed: Scene XML created")
+            
+            # Save scene XML
+            print(f"Step 4: Saving scene XML...")
+            scene_xml_file = os.path.join(self.caves_directory, f"scene_{scene_type}.xml")
+            with open(scene_xml_file, "w") as f:
+                f.write(scene_xml)
+            print(f"Step 4 completed: Scene XML saved to {scene_xml_file}")
+            
+            # Create MuJoCo models
+            print(f"Step 5: Creating MuJoCo model...")
+            mj_model = self._create_mujoco_model(scene_xml_file, config)
+            print(f"Step 5 completed: MuJoCo model created")
+            
+            print(f"Step 6: Creating MJX model...")
+            mjx_model = mjx.put_model(mj_model)
+            print(f"Step 6 completed: MJX model created")
+            
+            # Clean up temporary files
+            print(f"Step 7: Cleaning up temporary files...")
+            os.remove(scene_xml_file)
+            print(f"Step 7 completed: Temporary files cleaned up")
+            
+            # Store in evaluation scene (only the specific cave data)
+            self.eval_scene["mj_model"] = mj_model
+            self.eval_scene["mjx_model"] = mjx_model
+            self.eval_scene["num_caves"] = 1  # Only one cave for evaluation
+            self.eval_scene["master_cave_id"] = eval_cave_id  # The specific cave used
+            
+            # Store only the specific evaluation cave data
+            print(f"Step 8: Storing evaluation cave data...")
+            cave_info = all_cave_data[eval_cave_id]
+            self.eval_scene["caves"][eval_cave_id] = {
+                "box_count": cave_info["box_count"],
+                "starting_pos": cave_info["starting_pos"],
+                "target_pos": cave_info["target_pos"],
+                "voxel_bounds": cave_info["voxel_bounds"],
+                "voxel_size": cave_info["voxel_size"],
+                "voxel_positions": [box["position"] for box in cave_info["boxes"]], # Store all voxel positions
+            }
+            print(f"Step 8 completed: Evaluation cave data stored")
+            
+            print(f"Created {scene_type} scene with specific cave {eval_cave_id}")
+            return
+        
+        # Original master cave approach for training or when eval_cave_index is None
+        # Find the master cave (cave with most voxels)
+        print(f"Step 1: Finding master cave...")
+        master_cave_id, master_cave_data = self._find_master_cave(all_cave_data)
+        print(f"Step 1 completed: Master cave {master_cave_id} selected")
+        # Original master cave approach for training or when eval_cave_index is None
         # Find the master cave (cave with most voxels)
         print(f"Step 1: Finding master cave...")
         master_cave_id, master_cave_data = self._find_master_cave(all_cave_data)
@@ -276,12 +361,16 @@ class CaveBatchLoader:
         """Get the evaluation scene data."""
         return self.eval_scene
     
+    def get_eval_cave_index(self):
+        """Get the evaluation cave ID that was specified."""
+        return self.eval_cave_index
+    
     def get_dataset_summary(self):
         """Get a summary of the dataset split."""
         training_cave_ids = sorted(list(self.training_scene["caves"].keys()))
         eval_cave_ids = sorted(list(self.eval_scene["caves"].keys()))
         
-        return {
+        summary = {
             "total_caves": len(training_cave_ids) + len(eval_cave_ids),
             "training_caves": {
                 "count": len(training_cave_ids),
@@ -295,6 +384,15 @@ class CaveBatchLoader:
             "eval_master_cave": self.eval_scene.get("master_cave_id"),
             "no_overlap": len(set(training_cave_ids).intersection(set(eval_cave_ids))) == 0
         }
+        
+        # Add information about specific evaluation cave if used
+        if self.eval_cave_index is not None:
+            summary["eval_cave_id"] = self.eval_cave_index
+            summary["eval_cave_specific"] = True
+        else:
+            summary["eval_cave_specific"] = False
+            
+        return summary
     
     def create_cave_xml_from_positions(self, cave_id, scene_type="training"):
         """Create XML string for a specific cave from its voxel positions."""

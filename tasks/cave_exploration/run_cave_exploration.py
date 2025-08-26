@@ -23,7 +23,7 @@ print("=== STARTING CAVE EXPLORATION RL TRAINING ===")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 # GPU configuration
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 # Configure JAX GPU memory settings BEFORE importing jax - OPTIMIZED FOR 40GB A100
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.975'  # Use 98.5% of GPU memory (~39.4GB out of 40GB)
