@@ -656,7 +656,7 @@ class CaveExplore(mjx_env.MjxEnv):
         selected_index=selected_index,
         new_position=new_position
     )
-    jax.effects_barrier()
+
     qpos = qpos.at[:2].set(new_position[:2])  # Set x, y positions
     qpos = qpos.at[2].set(qpos[2] + new_position[2])  # Add z offset to existing z position
 

@@ -26,8 +26,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 # Configure JAX GPU memory settings BEFORE importing jax - OPTIMIZED FOR 40GB A100
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.975'  # Use 98.5% of GPU memory (~39.4GB out of 40GB)
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'  # Don't preallocate - grow as needed to avoid fragmentation
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.99'  # Use 99% of GPU memory (~39.4GB out of 40GB)
+#os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'  # Don't preallocate - grow as needed to avoid fragmentation
 
 # Tell XLA to use Triton GEMM, this improves steps/sec by ~30% on some GPUs
 xla_flags = os.environ.get('XLA_FLAGS', '')
@@ -85,7 +85,7 @@ print("Brax imports completed...")
 
 # Task-specific imports
 from tasks.cave_exploration.cave_exploration import CaveExplore, default_config as reachbot_config
-from tasks.cave_exploration.environment.env_loader import CaveBatchLoader
+from tasks.cave_exploration.environment.env_loader_new import CaveBatchLoader
 from tasks.cave_exploration.domain_randomize import create_cave_domain_randomizer, prepare_cave_data_arrays
 from models.model_loader import ReachbotModelType
 from tasks.common.randomize import domain_randomize as reachbot_randomize
@@ -100,11 +100,15 @@ times = [datetime.now()]
 
 print("=== ALL IMPORTS LOADED SUCCESSFULLY! ===")
 
-# JSON encoder for JAX arrays
+# JSON encoder for JAX arrays and other non-serializable types
 class JaxArrayEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, jp.ndarray):
             return obj.tolist()
+        elif hasattr(obj, 'keys') and type(obj).__name__ in ('dict_keys', 'dict_values'):
+            return list(obj)
+        elif hasattr(obj, '__dict__'):
+            return obj.__dict__
         return json.JSONEncoder.default(self, obj)
 
 # Convert ConfigDict and other non-serializable objects to regular dicts
@@ -126,6 +130,8 @@ def convert_to_dict(obj):
         return 1e308
     elif isinstance(obj, float) and obj == float('-inf'):
         return -1e308
+    elif type(obj).__name__ in ('dict_keys', 'dict_values', 'dict_items'):
+        return list(obj)
     else:
         return obj
 
@@ -150,8 +156,8 @@ def configure_environment():
     
     env_cfg.noise_config.level = 0.0
 
-    env_cfg.reward_config.scales.track_lidar_direction = 1.0
-    env_cfg.reward_config.scales.wide_stance = 0 
+    env_cfg.reward_config.scales.track_lidar_direction = 0.5
+    env_cfg.reward_config.scales.wide_stance = 0.05  
     
     # Reward scaling configuration
     env_cfg.reward_config.scales.orientation = -1.0
@@ -164,8 +170,11 @@ def configure_environment():
     
     # Target-based rewards
     env_cfg.reward_config.scales.distance_from_start = -1
-    env_cfg.reward_config.scales.stability = -0.5
+    env_cfg.reward_config.scales.stability = -1
     env_cfg.reward_config.scales.exploration_rate = 0.0
+    env_cfg.reward_config.scales.x_milestone_progress = 1.0  # Reward for reaching x-direction milestones
+
+    env_cfg.randomize_starting_pos = True  # Randomize starting position within the cave
 
     
     print("Environment configuration completed!")
@@ -178,16 +187,17 @@ def configure_ppo_parameters():
     ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
     ppo_training_params = dict(ppo_params)
     # Modify params for training
-    ppo_training_params["num_timesteps"] = 10_000_000  # 100 million timesteps
-    ppo_training_params["episode_length"] = 4000
+    ppo_training_params["num_timesteps"] = 200_000_000  # 50 million timesteps
+    ppo_training_params["episode_length"] = 3000
     ppo_training_params["num_envs"] = 2048
     ppo_training_params["batch_size"] = 256
     ppo_training_params["num_minibatches"] = 32
     ppo_training_params["num_updates_per_batch"] = 4
     ppo_training_params["unroll_length"] = 64
-    ppo_training_params["entropy_cost"] = 0.02
-    ppo_training_params["learning_rate"] = 3e-4
+    ppo_training_params["entropy_cost"] = 0.01
+    ppo_training_params["learning_rate"] = 2e-4
     ppo_training_params["discounting"] = 0.995
+    ppo_training_params["clipping_epsilon"] = 0.2
     ppo_training_params["num_evals"] = ppo_training_params["num_timesteps"] // 10_000_000
     if (ppo_training_params["num_evals"] < 10):
         ppo_training_params["num_evals"] = 10
@@ -204,7 +214,7 @@ def save_video(frames, video_path, fps):
     imageio.mimsave(video_path, frames, fps=fps)
        
 
-def trainModel(ppo_params_input:dict, env_cfg):
+def trainModel(ppo_params_input:dict, env_cfg, cave_batch_loader):
     """Main training function that matches the notebook approach"""
     
     # Create log directory for training run
@@ -214,7 +224,7 @@ def trainModel(ppo_params_input:dict, env_cfg):
     
     # Load cave environments using CaveBatchLoader
     print("Loading cave environments...")
-    cave_batch_loader = CaveBatchLoader(env_cfg, ReachbotModelType.BASIC)
+    
     
     # Print dataset summary
     dataset_summary = cave_batch_loader.get_dataset_summary()
@@ -226,42 +236,33 @@ def trainModel(ppo_params_input:dict, env_cfg):
     print(f"  Training master cave: {dataset_summary['training_master_cave']}")
     print(f"  Evaluation master cave: {dataset_summary['eval_master_cave']}")
     
-    # Get the training and evaluation datasets (no overlap)
-    training_scene_data = cave_batch_loader.get_training_scene_data()
-    eval_scene_data = cave_batch_loader.get_eval_scene_data()
-    
-    # Create training environment with domain randomization enabled
-    training_cave_ids = list(training_scene_data["caves"].keys())
-    print(f"\nCreating training environment with domain randomization for {len(training_cave_ids)} caves")
     
     # Create training environment with domain randomization enabled
     env = CaveExplore(
         config=env_cfg, 
-        scene_data=training_scene_data, 
         scene_type="training",
-        domain_randomization_enabled=True
+        cave_data=cave_batch_loader.training_scene["caves"], 
+        master_cave_xml_path=cave_batch_loader.training_scene["scene_xml_path"],
     )
 
     # For evaluation, use a fixed cave without domain randomization
-    eval_cave_ids = list(eval_scene_data["caves"].keys())
-    selected_eval_cave_id = eval_scene_data["master_cave_id"]
+    selected_eval_cave_id = cave_batch_loader.eval_scene["master_cave_id"]
     eval_env = CaveExplore(
-        config=env_cfg, 
-        scene_data=eval_scene_data, 
-        scene_type="eval",
-        domain_randomization_enabled=False
+        config=env_cfg,
+        scene_type="evaluation",
+        cave_data=cave_batch_loader.eval_scene["caves"],
+        master_cave_xml_path=cave_batch_loader.eval_scene["scene_xml_path"],
     )
-    eval_env.select_cave_environment(selected_eval_cave_id)
     
     print(f"\nEnvironment creation completed:")
-    print(f"  Training environment: Domain randomization with {len(training_cave_ids)} caves")
+    print(f"  Training environment: Domain randomization with {len(cave_batch_loader.training_scene['caves'])} caves")
     print(f"  Evaluation environment: Cave {selected_eval_cave_id}")
 
     # Setup domain randomization for cave environments
     print("\n=== SETTING UP CAVE DOMAIN RANDOMIZATION ===")
     try:
         print("Preparing cave data arrays...")
-        cave_data_arrays = prepare_cave_data_arrays(cave_batch_loader, max_boxes=7500)
+        cave_data_arrays = prepare_cave_data_arrays(env.mj_model, cave_batch_loader, max_boxes=7500)
         
         print("Creating domain randomizer...")
         cave_domain_randomize = create_cave_domain_randomizer(cave_data_arrays, max_boxes=7500)
@@ -297,8 +298,8 @@ def trainModel(ppo_params_input:dict, env_cfg):
         "ppo_params": convert_to_dict(ppo_params_input),
         "dataset_summary": dataset_summary,
         "selected_eval_cave_id": selected_eval_cave_id,
-        "training_caves_available": training_cave_ids,
-        "eval_caves_available": eval_cave_ids,
+        "training_caves_ids": list(cave_batch_loader.training_scene["caves"].keys()),
+        "eval_cave_ids": list(cave_batch_loader.eval_scene["caves"].keys()),
         "reachbot_model_type": ReachbotModelType.BASIC.name,
         "training_mode": "wrapper_dynamic_caves",
         "domain_randomization": {
@@ -479,6 +480,7 @@ def create_videos(env, params, make_inference_fn, logdir, times, total_rewards, 
     gc.collect()
     
     # Setup JIT compiled functions for inference
+    # Note: This should work fine since we're using the evaluation environment (not training env)
     jit_reset = jax.jit(env.reset)
     jit_step = jax.jit(env.step)
     inference_fn = make_inference_fn(params, deterministic=True)
@@ -489,7 +491,7 @@ def create_videos(env, params, make_inference_fn, logdir, times, total_rewards, 
     # Rollout parameters
     rng = jax.random.PRNGKey(0)
     n_episodes = 5
-    rollout_steps = 5000
+    rollout_steps = 2000
     
     # Rollout policy and record simulation
     print(f"Running rollout for {n_episodes} episode(s) with {rollout_steps} steps each...")
@@ -498,6 +500,7 @@ def create_videos(env, params, make_inference_fn, logdir, times, total_rewards, 
     for episode in range(n_episodes):
         print(f"Episode {episode + 1}/{n_episodes}")
         episode_rng, rng = jax.random.split(rng)
+        # Use JIT compiled reset function (should work fine with eval environment)
         state = jit_reset(episode_rng)
         rollout = [state]  # Reset rollout for each episode
         episode_reward = 0.0
@@ -587,12 +590,25 @@ def main():
         # Configuration
         env_cfg = configure_environment()
         ppo_params, ppo_training_params = configure_ppo_parameters()
+
+        cave_batch_loader = CaveBatchLoader(env_cfg, reachbot_model_type=ReachbotModelType.BASIC, eval_cave_index=289)
         
-        # Call the updated training function
-        env, params, make_inference_fn, logdir, times, total_rewards, total_rewards_std = trainModel(ppo_training_params, env_cfg)
+        # Call the updated training function 
+        _, params, make_inference_fn, logdir, times, total_rewards, total_rewards_std = trainModel(ppo_training_params, env_cfg, cave_batch_loader)
         
-        # Video creation
-        episode_rewards = create_videos(env, params, make_inference_fn, logdir, times, total_rewards, total_rewards_std)
+        # Create a fresh, clean evaluation environment for video creation (like in render_policy.py)
+        # This avoids tracer leaks from the training-contaminated eval_env
+        print("Creating fresh evaluation environment for video rendering...")
+        fresh_eval_env = CaveExplore(
+            config=env_cfg,
+            scene_type="evaluation", 
+            cave_data=cave_batch_loader.eval_scene["caves"],
+            master_cave_xml_path=cave_batch_loader.eval_scene["scene_xml_path"],
+        )
+        print(f"Fresh eval environment created for cave: {cave_batch_loader.eval_scene['master_cave_id']}")
+        
+        # Video creation using fresh evaluation environment (clean, no training contamination)
+        episode_rewards = create_videos(fresh_eval_env, params, make_inference_fn, logdir, times, total_rewards, total_rewards_std)
         
         print("✅ All tasks completed successfully!")
         
