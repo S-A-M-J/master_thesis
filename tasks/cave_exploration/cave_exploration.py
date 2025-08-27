@@ -700,7 +700,7 @@ class CaveExplore(mjx_env.MjxEnv):
 
     pos_history = jp.tile(qpos[0:3], (self._no_movement_steps, 1))
 
-    #jax.debug.print("qpos: {qpos}", qpos=qpos)
+    jax.debug.print("cave_idx: {idx}", idx=cave_idx_float)
   
     info = {
         "rng": rng,
