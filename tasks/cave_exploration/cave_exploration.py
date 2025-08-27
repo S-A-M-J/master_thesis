@@ -203,6 +203,7 @@ class CaveExplore(mjx_env.MjxEnv):
     
     # Initialize cave geom IDs dictionary for all boxes in the master cave
     self._master_cave_geom_ids = []
+    self._last_master_cave_geom_id = None  # Will be set in _initialize_master_cave_geom_mapping
     self._current_cave_id = None
     self._initialize_master_cave_geom_mapping()
     
@@ -394,7 +395,15 @@ class CaveExplore(mjx_env.MjxEnv):
     # Convert to JAX array for efficiency
     self._master_cave_geom_ids = jp.array(self._master_cave_geom_ids)
     
+    # Store the last master cave geom ID for retrieving cave index from domain randomization
+    if len(self._master_cave_geom_ids) > 0:
+        self._last_master_cave_geom_id = self._master_cave_geom_ids[-1]
+    else:
+        self._last_master_cave_geom_id = None
+    
     print(f"Initialized {len(self._master_cave_geom_ids)} geoms for master cave {self._master_cave_id}")
+    if self._last_master_cave_geom_id is not None:
+        print(f"Last master cave geom ID for cave index retrieval: {self._last_master_cave_geom_id}")
     
 
   def _post_init(self) -> None:
@@ -606,11 +615,14 @@ class CaveExplore(mjx_env.MjxEnv):
     """Reset the environment. Works with both domain randomization and manual cave selection."""
     
     if self._domain_randomization_enabled:
-        # For domain randomization, select a random cave and get its data
-        rng, cave_rng = jax.random.split(rng)
-        num_caves = len(self.caveIds)
-        cave_idx = jax.random.randint(cave_rng, (), 0, num_caves)
+        # For domain randomization, retrieve the cave index from the last geom position
+        # The domain randomizer encodes the cave_idx in the x-coordinate of the last master cave geom
+        if self._last_master_cave_geom_id is None:
+            raise RuntimeError("Master cave geom mapping not initialized for domain randomization.") 
+        cave_idx_float = self.mjx_model.geom_pos[self._last_master_cave_geom_id, 0]
+        cave_idx = cave_idx_float.astype(jp.int32)
         env_data = self.get_current_cave_data_from_randomization(cave_idx)
+        
     else:
         # For manual cave selection, require a cave to be selected first
         if self._current_cave_id is None:
@@ -623,7 +635,7 @@ class CaveExplore(mjx_env.MjxEnv):
     qpos = self._init_q.copy()
     
     # 30% chance for random starting position, 70% chance for first starting position
-    use_random_pos = jax.random.uniform(key1) < 0.3
+    use_random_pos = jax.random.uniform(key1) < 0.8
     random_index = jax.random.randint(key2, (), 0, length_starting_pos)
 
     if self._config.randomize_starting_pos:
@@ -637,6 +649,14 @@ class CaveExplore(mjx_env.MjxEnv):
         env_data['starting_pos_y'][selected_index], 
         env_data['starting_pos_z'][selected_index]
     ])
+    jax.debug.print(
+        "Env_type: {type}, Cave ID: {cave_id}, Selected starting position index: {selected_index}, New starting position: {new_position}",
+        type=self._scene_type,
+        cave_id=env_data['cave_id'],
+        selected_index=selected_index,
+        new_position=new_position
+    )
+    jax.effects_barrier()
     qpos = qpos.at[:2].set(new_position[:2])  # Set x, y positions
     qpos = qpos.at[2].set(qpos[2] + new_position[2])  # Add z offset to existing z position
 

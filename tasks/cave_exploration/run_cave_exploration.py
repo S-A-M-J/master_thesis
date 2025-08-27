@@ -178,7 +178,7 @@ def configure_ppo_parameters():
     ppo_params = locomotion_params.brax_ppo_config(ENV_STR)
     ppo_training_params = dict(ppo_params)
     # Modify params for training
-    ppo_training_params["num_timesteps"] = 100_000_000  # 100 million timesteps
+    ppo_training_params["num_timesteps"] = 10_000_000  # 100 million timesteps
     ppo_training_params["episode_length"] = 4000
     ppo_training_params["num_envs"] = 2048
     ppo_training_params["batch_size"] = 256
@@ -244,7 +244,7 @@ def trainModel(ppo_params_input:dict, env_cfg):
 
     # For evaluation, use a fixed cave without domain randomization
     eval_cave_ids = list(eval_scene_data["caves"].keys())
-    selected_eval_cave_id = eval_cave_ids[0]  # Use first eval cave
+    selected_eval_cave_id = eval_scene_data["master_cave_id"]
     eval_env = CaveExplore(
         config=env_cfg, 
         scene_data=eval_scene_data, 
