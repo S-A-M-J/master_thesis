@@ -432,9 +432,9 @@ class CaveBatchLoader:
         with open(template_path, "r") as f:
             scene_template = f.read()
         
-        # Replace placeholders in template
-        scene_xml = scene_template.replace("{REACHBOT_MODEL_PATH}", self.reachbot_model.model_path)
-        scene_xml = scene_xml.replace("{CAVE_BOXES_PATH}", master_cave_xml_file)
+        # Replace placeholders in template - use absolute paths to avoid path resolution issues
+        scene_xml = scene_template.replace("{REACHBOT_MODEL_PATH}", os.path.abspath(self.reachbot_model.model_path))
+        scene_xml = scene_xml.replace("{CAVE_BOXES_PATH}", os.path.abspath(master_cave_xml_file))
         
         return scene_xml
 

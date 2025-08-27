@@ -58,6 +58,11 @@ class CaveBatchLoader:
         
         # Create evaluation scene  
         self._create_scene(eval_caves, all_cave_data, config, "eval")
+        
+        # Verify at least one scene was created successfully
+        if (self.training_scene["mj_model"] is None and 
+            self.eval_scene["mj_model"] is None):
+            raise ValueError("No scenes could be created - need at least one cave for training or evaluation")
 
     def _load_all_cave_metadata(self, cave_folders):
         """Load metadata from all caves using cave_config.json files."""
@@ -152,9 +157,26 @@ class CaveBatchLoader:
         """Create a scene (training or eval) using the master cave approach."""
         print(f"Creating {scene_type} scene with {len(cave_folders)} caves...")
         
-        # Find the master cave (cave with most voxels)
-        print(f"Step 1: Finding master cave...")
-        master_cave_id, master_cave_data = self._find_master_cave(all_cave_data)
+        # Check if we have any caves for this scene
+        if len(cave_folders) == 0:
+            print(f"Warning: No caves found for {scene_type} scene. Skipping scene creation.")
+            scene_dict = self.training_scene if scene_type == "training" else self.eval_scene
+            scene_dict["mj_model"] = None
+            scene_dict["mjx_model"] = None
+            scene_dict["num_caves"] = 0
+            scene_dict["master_cave_id"] = None
+            return
+        
+        # Filter cave data to only include caves in this scene
+        scene_cave_data = {}
+        for folder in cave_folders:
+            cave_id = self._get_cave_id_from_folder(folder)
+            if cave_id in all_cave_data:
+                scene_cave_data[cave_id] = all_cave_data[cave_id]
+        
+        # Find the master cave (cave with most voxels) from this scene's caves
+        print(f"Step 1: Finding master cave from {len(scene_cave_data)} caves...")
+        master_cave_id, master_cave_data = self._find_master_cave(scene_cave_data)
         print(f"Step 1 completed: Master cave {master_cave_id} selected")
         
         # Add the cave_id to master_cave_data for XML generation
@@ -262,18 +284,28 @@ class CaveBatchLoader:
             Dictionary containing all scene data including models and cave information
         """
         if scene_type == "training":
-            return self.training_scene
+            scene_data = self.training_scene
         elif scene_type == "eval":
-            return self.eval_scene
+            scene_data = self.eval_scene
         else:
             raise ValueError(f"Invalid scene_type: {scene_type}. Must be 'training' or 'eval'")
+            
+        # Check if scene was created successfully
+        if scene_data["mj_model"] is None:
+            raise ValueError(f"No {scene_type} scene available - scene was not created (likely no caves in this split)")
+            
+        return scene_data
     
     def get_training_scene_data(self):
         """Get the training scene data."""
+        if self.training_scene["mj_model"] is None:
+            raise ValueError("No training scene available - scene was not created (likely no caves in training split)")
         return self.training_scene
     
     def get_eval_scene_data(self):
         """Get the evaluation scene data."""
+        if self.eval_scene["mj_model"] is None:
+            raise ValueError("No evaluation scene available - scene was not created (likely no caves in evaluation split)")
         return self.eval_scene
     
     def get_dataset_summary(self):
@@ -334,9 +366,9 @@ class CaveBatchLoader:
         with open(template_path, "r") as f:
             scene_template = f.read()
         
-        # Replace placeholders in template
-        scene_xml = scene_template.replace("{REACHBOT_MODEL_PATH}", self.reachbot_model.model_path)
-        scene_xml = scene_xml.replace("{CAVE_BOXES_PATH}", master_cave_xml_file)
+        # Replace placeholders in template - use absolute paths to avoid path resolution issues
+        scene_xml = scene_template.replace("{REACHBOT_MODEL_PATH}", os.path.abspath(self.reachbot_model.model_path))
+        scene_xml = scene_xml.replace("{CAVE_BOXES_PATH}", os.path.abspath(master_cave_xml_file))
         
         return scene_xml
 
