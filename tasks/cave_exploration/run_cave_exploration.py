@@ -195,7 +195,7 @@ def configure_ppo_parameters():
     ppo_training_params["num_updates_per_batch"] = 4
     ppo_training_params["unroll_length"] = 64
     ppo_training_params["entropy_cost"] = 0.01
-    ppo_training_params["learning_rate"] = 2e-4
+    ppo_training_params["learning_rate"] = 3e-4
     ppo_training_params["discounting"] = 0.995
     ppo_training_params["clipping_epsilon"] = 0.2
     ppo_training_params["num_evals"] = ppo_training_params["num_timesteps"] // 10_000_000

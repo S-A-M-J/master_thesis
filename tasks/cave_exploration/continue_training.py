@@ -24,10 +24,10 @@ print("=== STARTING CAVE EXPLORATION RL TRAINING ===")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 # GPU configuration
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 # Configure JAX GPU memory settings BEFORE importing jax - OPTIMIZED FOR 40GB A100
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.985'  # Use 98.5% of GPU memory (~39.4GB out of 40GB)
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'  # Use 98.5% of GPU memory (~39.4GB out of 40GB)
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'  # Don't preallocate - grow as needed to avoid fragmentation
 
 # Tell XLA to use Triton GEMM, this improves steps/sec by ~30% on some GPUs
@@ -87,7 +87,7 @@ print("Brax imports completed...")
 
 # Task-specific imports
 from tasks.cave_exploration.cave_exploration import CaveExplore, default_config as reachbot_config
-from tasks.cave_exploration.environment.env_loader import CaveBatchLoader
+from tasks.cave_exploration.environment.env_loader_new import CaveBatchLoader
 from tasks.cave_exploration.domain_randomize import create_cave_domain_randomizer, prepare_cave_data_arrays
 from models.model_loader import ReachbotModelType
 from tasks.common.randomize import domain_randomize as reachbot_randomize
@@ -137,6 +137,8 @@ def parse_arguments():
                         help="Path to the log directory containing the checkpoint to continue from")
     parser.add_argument("--additional_timesteps", type=int, default=50_000_000,
                         help="Additional timesteps to train (default: 50M)")
+    parser.add_argument("--caves_directory", type=str,
+                        help="Directory containing the cave environments")
     return parser.parse_args()
 
 def load_config_from_logdir(log_dir):
@@ -230,15 +232,13 @@ def save_video(frames, video_path, fps):
     imageio.mimsave(video_path, frames, fps=fps)
        
 
-def trainModel(ppo_params_input: dict, env_cfg, loaded_config, checkpoint_path=None, initial_step=0, original_log_dir=None):
+def trainModel(ppo_params_input: dict, env_cfg, loaded_config, checkpoint_path=None, initial_step=0, original_log_dir=None, caves_directory="caves/003_caves"):
     """Main training function that continues from checkpoint or starts fresh"""
     
     # Create log directory for training run
     datetime_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     if original_log_dir:
-        # Extract original timestamp for reference
-        original_timestamp = os.path.basename(original_log_dir).replace("cave_exploration-", "")
-        logdir = os.path.join(os.getcwd(), f"logs/cave_exploration-continue-{original_timestamp}-{datetime_str}")
+        logdir = os.path.join(os.getcwd(), f"logs/cave_exploration-continue-{datetime_str}")
     else:
         logdir = os.path.join(os.getcwd(), "logs/cave_exploration-"+datetime_str)
     os.makedirs(logdir, exist_ok=True)
@@ -250,8 +250,8 @@ def trainModel(ppo_params_input: dict, env_cfg, loaded_config, checkpoint_path=N
     
     # Load cave environments using CaveBatchLoader (same as before)
     print("Loading cave environments...")
-    cave_batch_loader = CaveBatchLoader(env_cfg, ReachbotModelType.BASIC)
-    
+    cave_batch_loader = CaveBatchLoader(env_cfg, ReachbotModelType.BASIC, caves_directory=caves_directory)
+
     # Print dataset summary
     dataset_summary = cave_batch_loader.get_dataset_summary()
     print(f"\nDataset Summary:")
@@ -260,8 +260,8 @@ def trainModel(ppo_params_input: dict, env_cfg, loaded_config, checkpoint_path=N
     print(f"  Evaluation caves: {dataset_summary['eval_caves']['count']}")
     print(f"  No overlap: {dataset_summary['no_overlap']}")
     print(f"  Training master cave: {dataset_summary['training_master_cave']}")
-    print(f"  Evaluation master cave: {dataset_summary['eval_master_cave']}")
-    
+    print(f"  Evaluation master cave: {cave_batch_loader.get_master_cave_id(scene_type='eval')}")
+
     # Get the training and evaluation datasets (no overlap)
     training_scene_data = cave_batch_loader.get_training_scene_data()
     eval_scene_data = cave_batch_loader.get_eval_scene_data()
@@ -280,14 +280,15 @@ def trainModel(ppo_params_input: dict, env_cfg, loaded_config, checkpoint_path=N
 
     # For evaluation, use the same eval cave as the original training if available
     eval_cave_ids = list(eval_scene_data["caves"].keys())
-    if original_log_dir and 'selected_eval_cave_id' in loaded_config:
-        selected_eval_cave_id = loaded_config['selected_eval_cave_id']
-        if selected_eval_cave_id not in eval_cave_ids:
-            print(f"Warning: Original eval cave {selected_eval_cave_id} not available, using {eval_cave_ids[0]}")
-            selected_eval_cave_id = eval_cave_ids[0]
-    else:
-        selected_eval_cave_id = eval_cave_ids[0]  # Use first eval cave
-        
+    #if original_log_dir and 'selected_eval_cave_id' in loaded_config:
+    #    selected_eval_cave_id = loaded_config['selected_eval_cave_id']
+    #    if selected_eval_cave_id not in eval_cave_ids:
+    #        print(f"Warning: Original eval cave {selected_eval_cave_id} not available, using {eval_cave_ids[0]}")
+    #        selected_eval_cave_id = cave_batch_loader.get_master_cave_id()  # Use first eval cave
+    #else:
+    #    selected_eval_cave_id = cave_batch_loader.get_master_cave_id()  # Use first eval cave
+    selected_eval_cave_id = cave_batch_loader.get_master_cave_id(scene_type="eval")
+
     eval_env = CaveExplore(
         config=env_cfg, 
         scene_data=eval_scene_data, 
@@ -359,7 +360,8 @@ def trainModel(ppo_params_input: dict, env_cfg, loaded_config, checkpoint_path=N
             "continuation_timestamp": datetime_str
         } if original_log_dir else {
             "is_continuation": False
-        }
+        },
+        "caves_directory": caves_directory
     }
     
     config_path = os.path.join(logdir, 'config.json')
@@ -447,7 +449,7 @@ def trainModel(ppo_params_input: dict, env_cfg, loaded_config, checkpoint_path=N
         max_devices_per_host=1,
         log_training_metrics=True,
         restore_checkpoint_path=checkpoint_path,
-        restore_value_fn=True
+        restore_value_fn=False
     )
     
     # Run training (with optional initial parameters for continuation)
@@ -651,11 +653,16 @@ def main():
         # Configure from loaded config
         env_cfg = configure_environment_from_config(loaded_config)
         ppo_params, ppo_training_params = configure_ppo_parameters_from_config(loaded_config, args.additional_timesteps)
-        
+
+        ppo_training_params["unroll_length"] = 100
+        ppo_training_params["entropy_cost"] = 0.001
+        ppo_training_params["learning_rate"] = 1e-4
+
         print(f"\n=== CONTINUATION SETUP ===")
         print(f"Original log directory: {args.log_dir}")
         print(f"Continuing from step: {latest_step}")
         print(f"Additional timesteps: {args.additional_timesteps}")
+        print(f"Caves directory: {args.caves_directory}")
         print(f"Latest checkpoint: {latest_checkpoint_path}")
         
         # Call the updated training function with continuation parameters
@@ -665,7 +672,8 @@ def main():
             loaded_config,
             checkpoint_path=latest_checkpoint_path,
             initial_step=latest_step,
-            original_log_dir=args.log_dir
+            original_log_dir=args.log_dir,
+            caves_directory=args.caves_directory
         )
         
         # Video creation

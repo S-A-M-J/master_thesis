@@ -12,6 +12,10 @@ def create_dent(theta, radius, dent_center=np.pi, dent_width=np.pi/2, dent_depth
     # Normal circular radius
     r = np.ones_like(theta) * radius
     
+    # Skip dent creation if depth is 0
+    if dent_depth == 0:
+        return r
+    
     # Add gaussian-shaped dent
     angle_diff = np.abs(theta - dent_center)
     angle_diff = np.minimum(angle_diff, 2*np.pi - angle_diff)  # Consider circular nature
@@ -20,7 +24,7 @@ def create_dent(theta, radius, dent_center=np.pi, dent_width=np.pi/2, dent_depth
     
     return r
 
-def generate_cave_tunnel(curve_intensity=0.5, seed=None):
+def generate_cave_tunnel(curve_intensity=0.5, num_dents=3, dent_depth_range=(0.4, 1.0), dent_width_range=(np.pi/6, np.pi/2), offset_magnitude=2, seed=None):
     # Set random seed for reproducible generation
     if seed is not None:
         np.random.seed(seed)
@@ -30,16 +34,17 @@ def generate_cave_tunnel(curve_intensity=0.5, seed=None):
     radius = 1.5  # meters
     num_segments = 10
     points_per_circle = 12
-    offset_magnitude = 2
-    num_dents = 3  # Number of dents to add
     
-    # Randomly choose segments for dents (excluding first and last)
-    available_segments = list(range(3, num_segments - 1))  # All segments except first 3 and last
-    dented_segments = np.random.choice(
-        available_segments, 
-        size=min(num_dents, len(available_segments)), 
-        replace=False
-    )
+    # Handle case where no dents are wanted
+    dented_segments = []
+    if num_dents > 0:
+        # Randomly choose segments for dents (excluding first and last)
+        available_segments = list(range(3, num_segments - 1))  # All segments except first 3 and last
+        dented_segments = np.random.choice(
+            available_segments, 
+            size=min(num_dents, len(available_segments)), 
+            replace=False
+        )
     
     #print(f"Adding dents to segments: {dented_segments}")
     
@@ -48,18 +53,20 @@ def generate_cave_tunnel(curve_intensity=0.5, seed=None):
     centerline = np.zeros((num_segments, 3))
     centerline[:, 0] = t  # Base X coordinates
     
-    # Add a smooth curve in the Y direction (parabolic shape)
-    curve_direction = np.random.choice([-1, 1])  # Random direction
-    centerline[:, 1] = curve_direction * curve_intensity * (t - t[0]) * (t - t[-1]) / 25
+    # Add a smooth curve in the Y direction (parabolic shape) - only if curve_intensity > 0
+    if curve_intensity > 0:
+        curve_direction = np.random.choice([-1, 1])  # Random direction
+        centerline[:, 1] = curve_direction * curve_intensity * (t - t[0]) * (t - t[-1]) / 25
     
-    # Add random offsets to Y and Z coordinates
-    # Using smooth transitions with cumsum to avoid sharp changes
-    random_offsets_y = np.random.uniform(-offset_magnitude, offset_magnitude, num_segments)
-    random_offsets_z = np.random.uniform(-offset_magnitude, offset_magnitude, num_segments)
-    
-    # Smooth out the offsets and add them to the curve
-    centerline[:, 1] += np.cumsum(random_offsets_y) * 0.1  # Y offset (reduced factor to not overwhelm the curve)
-    centerline[:, 2] = np.cumsum(random_offsets_z) * 0.3  # Z offset
+    # Add random offsets to Y and Z coordinates - only if offset_magnitude > 0
+    if offset_magnitude > 0:
+        # Using smooth transitions with cumsum to avoid sharp changes
+        random_offsets_y = np.random.uniform(-offset_magnitude, offset_magnitude, num_segments)
+        random_offsets_z = np.random.uniform(-offset_magnitude, offset_magnitude, num_segments)
+        
+        # Smooth out the offsets and add them to the curve
+        centerline[:, 1] += np.cumsum(random_offsets_y) * 0.1  # Y offset (reduced factor to not overwhelm the curve)
+        centerline[:, 2] = np.cumsum(random_offsets_z) * 0.3  # Z offset
     
     # Reset first position to avoid drift at the start
     centerline[0] = [0, 0, 0]
@@ -73,10 +80,10 @@ def generate_cave_tunnel(curve_intensity=0.5, seed=None):
         
         # Create cross-section, with potential dent
         if i in dented_segments:
-            # Random dent parameters with more variation
+            # Random dent parameters with configurable variation
             dent_center = np.random.uniform(0, 2*np.pi)  # Random angle
-            dent_width = np.random.uniform(np.pi/6, np.pi/2)  # Random width
-            dent_depth = np.random.uniform(0.4, 1.0)  # Random depth
+            dent_width = np.random.uniform(dent_width_range[0], dent_width_range[1])  # Configurable width range
+            dent_depth = np.random.uniform(dent_depth_range[0], dent_depth_range[1])  # Configurable depth range
             
             # Get radii with dent
             r = create_dent(theta, radius, dent_center, dent_width, dent_depth)
@@ -188,7 +195,7 @@ def save_cave_config(voxels, voxel_size, filename, cave_params, cave_id=None):
     
     return len(voxels)
 
-def create_cave(cave_id, output_dir, curve_intensity=0.5, voxel_size=0.2, seed=None):
+def create_cave(cave_id, output_dir, curve_intensity=0.5, num_dents=3, dent_depth_range=(0.4, 1.0), dent_width_range=(np.pi/6, np.pi/2), offset_magnitude=2, voxel_size=0.2, seed=None):
     """Create a single cave and save to the specified directory"""
     # Set random seed for reproducible generation
     if seed is not None:
@@ -202,8 +209,6 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5, voxel_size=0.2, seed=N
     radius = 2.0  # meters
     num_segments = 10
     points_per_circle = 12
-    offset_magnitude = 2
-    num_dents = 3  # Number of dents to add
     
     # Save generation parameters
     cave_params["generation"] = {
@@ -214,13 +219,15 @@ def create_cave(cave_id, output_dir, curve_intensity=0.5, voxel_size=0.2, seed=N
         "points_per_circle": points_per_circle,
         "offset_magnitude": offset_magnitude,
         "num_dents": num_dents,
+        "dent_depth_range": dent_depth_range,
+        "dent_width_range": dent_width_range,
         "curve_intensity": curve_intensity,
         "voxel_size": voxel_size,
         "seed": seed
     }
     
     # Generate the original mesh with the parameters
-    cave_mesh = generate_cave_tunnel(curve_intensity, seed)
+    cave_mesh = generate_cave_tunnel(curve_intensity, num_dents, dent_depth_range, dent_width_range, offset_magnitude, seed)
     #print(f"Cave {cave_id} - Original mesh - Vertex count: {len(cave_mesh.vertices)}")
     #print(f"Cave {cave_id} - Original mesh - Face count: {len(cave_mesh.faces)}")
     
@@ -468,6 +475,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("--voxel-size", type=float, default=0.2, help="Voxel size in meters (default: 0.2)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible generation (default: 42)")
+    parser.add_argument("--curve-intensity", type=float, default=0.5, help="Curve intensity for cave path (0 = straight, default: 0.5)")
+    parser.add_argument("--num-dents", type=int, default=3, help="Number of dents to add to cave walls (0 = no dents, default: 3)")
+    parser.add_argument("--dent-depth-min", type=float, default=0.4, help="Minimum dent depth (default: 0.4)")
+    parser.add_argument("--dent-depth-max", type=float, default=1.0, help="Maximum dent depth (default: 1.0)")
+    parser.add_argument("--dent-width-min", type=float, default=np.pi/6, help="Minimum dent width in radians (default: π/6)")
+    parser.add_argument("--dent-width-max", type=float, default=np.pi/2, help="Maximum dent width in radians (default: π/2)")
+    parser.add_argument("--offset-magnitude", type=float, default=2, help="Random offset magnitude for cave path (0 = no offsets, default: 2)")
     args = parser.parse_args()
     
     # Create base caves directory if it doesn't exist
@@ -491,10 +505,29 @@ if __name__ == "__main__":
         
         # Generate caves with different curve intensities using the cave-specific seed
         np.random.seed(cave_seed)
-        curve_intensity = np.random.uniform(0.3, 0.8)  # Random curve intensity for variety
+        
+        # Use command line parameters or generate random values if not specified as 0
+        if args.curve_intensity == 0:
+            curve_intensity = 0
+        else:
+            curve_intensity = np.random.uniform(0.3, 0.8) if args.curve_intensity < 0 else args.curve_intensity
+        
+        # Set up dent parameters
+        dent_depth_range = (args.dent_depth_min, args.dent_depth_max)
+        dent_width_range = (args.dent_width_min, args.dent_width_max)
         
         # Generate cave and save files
-        cave_params = create_cave(cave_id, cave_dir, curve_intensity, args.voxel_size, cave_seed)
+        cave_params = create_cave(
+            cave_id, 
+            cave_dir, 
+            curve_intensity, 
+            args.num_dents, 
+            dent_depth_range, 
+            dent_width_range, 
+            args.offset_magnitude, 
+            args.voxel_size, 
+            cave_seed
+        )
         
         caves_summary.append({
             "id": cave_id,
@@ -502,7 +535,11 @@ if __name__ == "__main__":
             "vertex_count": cave_params["original_mesh"]["vertex_count"],
             "box_count": cave_params["cave_boxes"]["box_count"],
             "seed": cave_seed,
-            "curve_intensity": curve_intensity
+            "curve_intensity": curve_intensity,
+            "num_dents": args.num_dents,
+            "dent_depth_range": dent_depth_range,
+            "dent_width_range": dent_width_range,
+            "offset_magnitude": args.offset_magnitude
         })
     
     # Save summary of all caves
@@ -512,6 +549,11 @@ if __name__ == "__main__":
             "base_seed": args.seed,
             "cave_count": args.count,
             "voxel_size": args.voxel_size,
+            "curve_intensity": args.curve_intensity,
+            "num_dents": args.num_dents,
+            "dent_depth_range": [args.dent_depth_min, args.dent_depth_max],
+            "dent_width_range": [args.dent_width_min, args.dent_width_max],
+            "offset_magnitude": args.offset_magnitude,
             "generation_time": time.strftime("%Y-%m-%d %H:%M:%S")
         },
         "caves": caves_summary

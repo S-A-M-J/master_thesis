@@ -649,13 +649,13 @@ class CaveExplore(mjx_env.MjxEnv):
         env_data['starting_pos_y'][selected_index], 
         env_data['starting_pos_z'][selected_index]
     ])
-    jax.debug.print(
-        "Env_type: {type}, Cave ID: {cave_id}, Selected starting position index: {selected_index}, New starting position: {new_position}",
-        type=self._scene_type,
-        cave_id=env_data['cave_id'],
-        selected_index=selected_index,
-        new_position=new_position
-    )
+    #jax.debug.print(
+    #    "Env_type: {type}, Cave ID: {cave_id}, Selected starting position index: {selected_index}, New starting position: {new_position}",
+    #   type=self._scene_type,
+    #   cave_id=env_data['cave_id'],
+    #   selected_index=selected_index,
+    #   new_position=new_position
+    #)
 
     qpos = qpos.at[:2].set(new_position[:2])  # Set x, y positions
     qpos = qpos.at[2].set(qpos[2] + new_position[2])  # Add z offset to existing z position
@@ -700,7 +700,6 @@ class CaveExplore(mjx_env.MjxEnv):
 
     pos_history = jp.tile(qpos[0:3], (self._no_movement_steps, 1))
 
-    jax.debug.print("cave_idx: {idx}", idx=cave_idx_float)
   
     info = {
         "rng": rng,
