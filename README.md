@@ -8,7 +8,7 @@ This repository contains the code for training a reinforcement learning model to
 
    Make sure to have cuda 12 or higher installed wherever you're running the training.
 
-1. Create a virtual environment with Python. Tested with Python 3.12 but other versions should work as well.
+1. Create a virtual environment with Python. Tested with Python 3.12 but other versions should work as well. Also would recommend using conda but venv should work fine.
 
    ```bash
    python3 -m venv venv
@@ -44,24 +44,5 @@ This repository contains the code for training a reinforcement learning model to
    }
    ```
 
-## Training
-
-### Local
-
-In the terminal, run the following command to train the model.
-
-1. Uncomment the following line in train.py if you plan on using cpu rather than an nvidia gpu.
-   ```python
-   # os.environ['JAX_PLATFORM_NAME'] = 'cpu'
-   ```
-2. Run the following command to train the model.
-   ```bash
-   python train.py
-   ```
-
-
-# Generating caves
-python '/home/ga53voq/master_thesis/tasks/cave_exploration/environment/utils/cave_generator.py' --count=300 --output-dir="new_caves"
-
-# running training in background
-nohup python -u tasks/cave_exploration/run_cave_exploration.py > cave_training.log 2>&1 &
+# How to use
+For specific usage instructions, please refer to the respective task directory README files.

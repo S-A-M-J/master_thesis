@@ -119,6 +119,7 @@ def default_config() -> config_dict.ConfigDict:
           horizontal_angle_range=jp.pi * 2,  # Horizontal angle range in radians
           num_vertical_rays=3,  # Number of vertical rays
           vertical_angle_range=jp.pi / 6,  # Vertical angle range in radians
+          frequency_hz=10.0,  # LIDAR update frequency in Hz (default 10Hz = 100ms interval)
       ),
   )
 

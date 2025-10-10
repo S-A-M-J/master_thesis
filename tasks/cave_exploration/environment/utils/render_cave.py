@@ -13,7 +13,7 @@ sys.path.append(project_root)
 sys.path.append(cave_exploration_dir)
 
 from environment.env_loader import CaveBatchLoader
-from cave_exploration import default_config as reachbot_config
+from tasks.cave_exploration.training.cave_exploration import default_config as reachbot_config
 
 def render_mesh( scale=1.0):
     """

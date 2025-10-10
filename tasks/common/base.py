@@ -168,6 +168,8 @@ class ReachbotEnv(mjx_env.MjxEnv):
     self._xml_path = xml_path
     self._imu_site_id = self._mj_model.site("imu").id
 
+    self._config = config
+
      # LIDAR parameters
     self._lidar_num_horizontal_rays = self._config.lidar_config.num_horizontal_rays
     self._lidar_num_vertical_rays = self._config.lidar_config.num_vertical_rays
@@ -207,19 +209,19 @@ class ReachbotEnv(mjx_env.MjxEnv):
 
     foot_linvel_sensor_adr = []
     for site in consts.FEET_SITES:
-      sensor_id = self._scene_data["mj_model"].sensor(f"{site}_global_linvel").id
-      sensor_adr = self._scene_data["mj_model"].sensor_adr[sensor_id]
-      sensor_dim = self._scene_data["mj_model"].sensor_dim[sensor_id]
+      sensor_id = self._mj_model.sensor(f"{site}_global_linvel").id
+      sensor_adr = self._mj_model.sensor_adr[sensor_id]
+      sensor_dim = self._mj_model.sensor_dim[sensor_id]
       foot_linvel_sensor_adr.append(
           list(range(sensor_adr, sensor_adr + sensor_dim))
       )
     self._foot_linvel_sensor_adr = jp.array(foot_linvel_sensor_adr)
 
     # Initialize IMU site ID which is needed for get_gravity method
-    self._imu_site_id = self._scene_data["mj_model"].site("imu").id
+    self._imu_site_id = self._mj_model.site("imu").id
 
-    mj_model = self._scene_data["mj_model"]
-    
+    mj_model = self._mj_model
+
     # Find all boom end geoms and create JAX-compatible arrays
     boom_geom_ids = []
     boom_nums = []
@@ -366,7 +368,7 @@ class ReachbotEnv(mjx_env.MjxEnv):
   @property
   def action_size(self) -> int:
     """Size of the action space."""
-    joints = self._mj_model.nu + 4 # Add 4 for grippers at boom ends
+    return self._mj_model.nu # +4 # for grippers if needed
 
   @property
   def mj_model(self) -> MjModel:

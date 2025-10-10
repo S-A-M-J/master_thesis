@@ -26,12 +26,13 @@
     <!--<texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800"/>-->
     <texture type="2d" name="groundplane" file="assets/rocky_texture.png"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance=".8"/>
-    <hfield name="hfield" file="assets/hfield.png" size="10 10 .05 0.1"/>
   </asset>
 
   <worldbody>
    <camera name="track_global" pos="0 0 -1" xyaxes="1 0 -0.5 0 1 0" mode="targetbody" target="mainBody"/>
-   <geom name="floor" pos="0 0 0" size="0 0 0.01" type="hfield" hfield="hfield" material="groundplane" priority="1" friction="5.0 0.01 0.001" solref="0.001 1" solimp="0.99 0.99 0.001" condim="3" contype="1" conaffinity="0"/>
+   <!-- Use an infinite plane for ground to ensure MJX collision support -->
+   <geom name="floor" type="plane" pos="0 0 0" size="0 0 1" material="groundplane" priority="1"
+         friction="5.0 0.01 0.001" solref="0.001 1" solimp="0.99 0.99 0.001" condim="3" contype="1" conaffinity="0"/>
   </worldbody>
 
 </mujoco>

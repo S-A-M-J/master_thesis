@@ -73,6 +73,14 @@ def default_config() -> config_dict.ConfigDict:
               vertical_velocity=-0,
           ),
       ),
+      lidar_config=config_dict.create(
+          num_horizontal_rays=20,  # Number of horizontal rays
+          max_range=20.0,  # Maximum range of LIDAR
+          horizontal_angle_range=jp.pi * 2,  # Horizontal angle range in radians
+          num_vertical_rays=5,  # Number of vertical rays
+          vertical_angle_range=jp.pi / 2,  # Vertical angle range in radians
+          frequency_hz=10.0,  # LIDAR update frequency in Hz (default 10Hz = 100ms interval)
+      ),
   )
 
 

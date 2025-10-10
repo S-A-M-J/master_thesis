@@ -73,6 +73,7 @@ def default_config() -> config_dict.ConfigDict:
               gyro=0.2,
               gravity=0.05,
               linvel=0.1,
+              lidar=0.04,  # LIDAR noise scale (0.04 = 4cm standard deviation)
           ),
       ),
       reward_config = config_dict.create(
@@ -103,6 +104,9 @@ def default_config() -> config_dict.ConfigDict:
             energy=-0.001,              # Penalty scale for energy consumption. Default is -0.001
             milestone_reward=0.1,  # Reward for reaching x-direction milestones
             
+            # Mission success
+            mission_success=10.0,      # Bonus reward for reaching the target position
+            
         ),
       ),
       pert_config=config_dict.create(
@@ -114,8 +118,8 @@ def default_config() -> config_dict.ConfigDict:
       stickiness_config=config_dict.create(
           enable=True,  # Enable stickiness forces
           stickiness_force=50.0,  # Force applied when stickiness is activated (towards wall when in contact)
-          min_activation_threshold=0.1,  # Threshold for activating stickiness
-          deactivation_threshold=-0.1,  # Threshold for deactivating stickiness (hysteresis)
+          min_activation_threshold=0.33,  # Threshold for activating stickiness
+          deactivation_threshold=-0.33,  # Threshold for deactivating stickiness (hysteresis)
       ),
       lidar_config=config_dict.create(
           num_horizontal_rays=20,  # Number of horizontal rays
@@ -238,6 +242,7 @@ class CaveExplore(mjx_env.MjxEnv):
     self._milestone_interval = 0.2  # 0.2 meters between milestones
     self._milestone_max_x = 20.0   # Maximum x position for milestones
     self._num_milestones = int(self._milestone_max_x / self._milestone_interval)  # 100 milestones
+    
     
     # Prepare cave data arrays for domain randomization if enabled
     if self._domain_randomization_enabled:
@@ -739,11 +744,16 @@ class CaveExplore(mjx_env.MjxEnv):
         "boom_contact_status": jp.zeros(4, dtype=bool),  # Initialize boom contact status
         "boom_in_range": jp.zeros(4, dtype=bool),  # Track if boom ends are in range for stickiness
         "boom_activated_by_network": jp.zeros(4, dtype=bool),  # Track if boom ends are activated by network
+        "mission_completed": False,  # Track if mission has been completed
+        "energy_usage": 0.0,  # Track cumulative energy usage
     }
 
     metrics = {}
     for k in self._config.reward_config.scales.keys():
       metrics[f"reward/{k}"] = jp.zeros(())
+    
+    # Add mission success metric to maintain consistent pytree structure
+    metrics["mission_success"] = jp.zeros(())
 
     # Calculate initial LIDAR data
     lidar_pos = self.get_lidar_pos(data)
@@ -802,9 +812,13 @@ class CaveExplore(mjx_env.MjxEnv):
 
     obs = self._get_obs(data, state.info)
     done = self._get_termination(data, state.info)
+    mission_success = self._get_mission_success(data, state.info)
+    
+    # Include mission success in termination (successful completion)
+    done = done | mission_success
 
     rewards = self._get_reward(
-        data, action, state.info, state.metrics, done
+        data, action, state.info, state.metrics, done, mission_success
     )
     rewards = {
         k: v * self._config.reward_config.scales[k] for k, v in rewards.items()
@@ -816,6 +830,17 @@ class CaveExplore(mjx_env.MjxEnv):
     state.info["last_act"] = action
     state.info["last_pos"] = data.qpos[0:3]
     state.info["lidar_step_counter"] += 1  # Increment LIDAR step counter
+    
+    # Track mission completion
+    state.info["mission_completed"] = state.info["mission_completed"] | mission_success
+    
+    # Update cumulative energy usage
+    current_energy_usage = self._cost_energy(data.qvel[6:], data.actuator_force)
+    state.info["energy_usage"] = state.info["energy_usage"] + current_energy_usage
+    
+    # Add mission success metric
+    state.metrics["mission_success"] = mission_success.astype(jp.float32)
+    
     for k, v in rewards.items():
       state.metrics[f"reward/{k}"] = v
 
@@ -859,7 +884,7 @@ class CaveExplore(mjx_env.MjxEnv):
     in_cave1 = jp.isin(g1, cave_geoms)  # [1,N] broadcast→[M,N]
 
     # Final mask: boom_end on one side, cave on the other
-    mask = ((is_be0 & in_cave1) | (is_be1 & in_cave0)) & (dist_arr[None, :] < 0.0)  # [M,N]
+    mask = ((is_be0 & in_cave1) | (is_be1 & in_cave0)) & (dist_arr[None, :] < 0.005)  # [M,N]
 
     # Broadcast dist_arr to [M,N], but push non‑matches to a large finite number
     large_distance = 1000.0  # Large finite number instead of inf
@@ -931,7 +956,7 @@ class CaveExplore(mjx_env.MjxEnv):
     
     # Check which booms are in the 0-5mm range from walls (0 = contact, positive = distance)
     # For stickiness activation, we want booms that are close to walls (in range for gripping)
-    in_range = (deepest_dists >= 0.0) & (deepest_dists <= 0.005)  # [4] boolean array
+    in_range = (deepest_dists >= 0.005) & (deepest_dists <= 0.005)  # [4] boolean array
     state_info["boom_contact_dists"] = deepest_dists
     
     # Update boom_in_contact tracking (consistent with stability calculation)
@@ -1101,6 +1126,13 @@ class CaveExplore(mjx_env.MjxEnv):
 
      return out_of_bounds | feet_out_of_bounds | torso_contact #| fall_termination #| no_movement
 
+  def _get_mission_success(self, data: mjx.Data, info: Dict[str, Any]) -> jax.Array:
+    """Check if the mission is successful (robot reached target position)."""
+    current_pos = data.qpos[0:3]
+    mission_success = current_pos[0] > 19.0
+
+    return mission_success
+
   def _get_obs(
       self, data: mjx.Data, info: Dict[str, Any]
   ) -> Dict[str, jax.Array]:
@@ -1153,17 +1185,21 @@ class CaveExplore(mjx_env.MjxEnv):
 
     # LIDAR data - update only at specified frequency to save compute
     should_update_lidar = (info["lidar_step_counter"] % self._lidar_update_interval_steps) == 0
-    
-    # Use jp.where instead of jax.lax.cond to avoid memory issues with lambda captures
+
     lidar_pos = self.get_lidar_pos(data)
     new_lidar_ranges = self._get_lidar_ranges(data, lidar_pos)
+    noisy_lidar_ranges = new_lidar_ranges + (
+        (2 * jax.random.uniform(noise_rng, shape=new_lidar_ranges.shape) - 1)
+        * self._config.noise_config.level
+        * self._config.noise_config.scales.lidar
+    )
     new_deepest_lidar_direction = self._get_avg_deepest_lidar_range(
-        new_lidar_ranges, self._local_ray_directions
+        noisy_lidar_ranges, self._local_ray_directions
     )
     
     # Only update cached data when needed, but compute is always done
     # This approach trades some computation for memory efficiency
-    lidar_ranges = jp.where(should_update_lidar, new_lidar_ranges, info["lidar_ranges"])
+    lidar_ranges = jp.where(should_update_lidar, noisy_lidar_ranges, info["lidar_ranges"])
     deepest_lidar_direction = jp.where(should_update_lidar, new_deepest_lidar_direction, info["deepest_lidar_direction"])
     
     # Update cached LIDAR data in info
@@ -1284,6 +1320,7 @@ class CaveExplore(mjx_env.MjxEnv):
         info: Dict[str, Any],
         metrics: Dict[str, Any],
         done: jax.Array,
+        mission_success: jax.Array,
     ) -> Dict[str, jax.Array]:
         del metrics  # Unused.
         #jax.debug.print("CaveExplore step: {qpos}", qpos=data.qpos)
@@ -1315,6 +1352,7 @@ class CaveExplore(mjx_env.MjxEnv):
             "milestone_reward": milestone_reward,
             "orientation": self._cost_orientation(self.get_upvector(data)),
             "termination": self._cost_termination(done),
+            "mission_success": self._reward_mission_success(mission_success),
             "torques": self._cost_torques(data.actuator_force),
             "action_rate": self._cost_action_rate(
                 action, info["last_act"], info["last_last_act"]
@@ -1372,6 +1410,11 @@ class CaveExplore(mjx_env.MjxEnv):
     reward = alignment * vel_scale
 
     return reward
+
+
+  def _reward_mission_success(self, mission_success: jax.Array) -> jax.Array:
+    """Reward for successfully reaching the target position."""
+    return mission_success.astype(jp.float32)
 
 
   def _cost_min_distance(self, lidar_ranges: jax.Array) -> jax.Array:
